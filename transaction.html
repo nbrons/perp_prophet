@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Execute Transaction</title>
+    <script src="https://unpkg.com/@keplr-wallet/types@0.11.3/build/index.js"></script>
+    <script src="https://unpkg.com/@injectivelabs/ts-types@1.14.4/dist/index.js"></script>
+    <script src="https://unpkg.com/@injectivelabs/wallet-ts@1.14.4/dist/index.js"></script>
+    <script src="https://bundle.run/buffer@6.0.3"></script>
+    <script>
+        // Get Buffer from the imported package
+        const Buffer = buffer.Buffer;
+    </script>
+</head>
+<body>
+    <h1>Execute Transaction</h1>
+    <button id="executeButton">Sign with Keplr</button>
+    <p id="status"></p>
+
+    <script>
+        const INJECTIVE_CHAIN_INFO = {
+            chainId: 'injective-1',
+            chainName: 'Injective',
+            rpc: 'https://sentry.exchange.grpc-web.injective.network',
+            rest: 'https://sentry.exchange.grpc-web.injective.network',
+            bip44: {
+                coinType: 60
+            },
+            bech32Config: {
+                bech32PrefixAccAddr: "inj",
+                bech32PrefixAccPub: "injpub",
+                bech32PrefixValAddr: "injvaloper",
+                bech32PrefixValPub: "injvaloperpub",
+                bech32PrefixConsAddr: "injvalcons",
+                bech32PrefixConsPub: "injvalconspub"
+            },
+            currencies: [{
+                coinDenom: "INJ",
+                coinMinimalDenom: "inj",
+                coinDecimals: 18
+            }],
+            feeCurrencies: [{
+                coinDenom: "INJ",
+                coinMinimalDenom: "inj",
+                coinDecimals: 18
+            }],
+            stakeCurrency: {
+                coinDenom: "INJ",
+                coinMinimalDenom: "inj",
+                coinDecimals: 18
+            },
+            gasPriceStep: {
+                low: 0.0000001,
+                average: 0.0000025,
+                high: 0.000004
+            }
+        };
+
+        async function executeTransaction() {
+            try {
+                // Get transaction data from URL
+                const urlParams = new URLSearchParams(window.location.search);
+                const data = JSON.parse(decodeURIComponent(urlParams.get('data')));
+                const transactions = data.transactions;
+                const userId = data.user_id;
+                
+                // Connect to Keplr
+                if (!window.keplr) {
+                    throw new Error('Please install Keplr wallet');
+                }
+
+                await window.keplr.experimentalSuggestChain(INJECTIVE_CHAIN_INFO);
+                await window.keplr.enable("injective-1");
+                const offlineSigner = window.keplr.getOfflineSigner("injective-1");
+                const accounts = await offlineSigner.getAccounts();
+                
+                // Sign and broadcast each transaction in sequence
+                for (const txData of transactions) {
+                    // Get account details
+                    const key = await window.keplr.getKey("injective-1");
+                    
+                    // Create proper sign doc format
+                    const signDoc = {
+                        chain_id: "injective-1",
+                        account_number: key.accountNumber,
+                        sequence: key.sequence,
+                        fee: {
+                            amount: [{ amount: "5000000000000000", denom: "inj" }],
+                            gas: "200000"
+                        },
+                        msgs: [
+                            {
+                                type: txData.typeUrl,
+                                value: txData.value
+                            }
+                        ],
+                        memo: ""
+                    };
+
+                    const signOptions = {
+                        preferNoSetFee: false,
+                        preferNoSetMemo: true,
+                        disableBalanceCheck: true
+                    };
+
+                    console.log('Signing transaction:', JSON.stringify(signDoc, null, 2));
+                    
+                    const signedResponse = await window.keplr.signAmino(
+                        "injective-1",
+                        accounts[0].address,
+                        signDoc,
+                        signOptions
+                    );
+                    
+                    console.log('Signed transaction:', signedResponse);
+                    
+                    // Send the transaction
+                    const broadcastEndpoint = "https://sentry.exchange.grpc-web.injective.network/cosmos/tx/v1beta1/txs";
+                    
+                    // Format the transaction for broadcasting
+                    const broadcastBody = {
+                        tx_bytes: signedResponse.signed,
+                        mode: "BROADCAST_MODE_BLOCK"
+                    };
+                    
+                    const txResponse = await fetch(broadcastEndpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(broadcastBody)
+                    });
+                    
+                    const txResult = await txResponse.json();
+                    
+                    console.log('Transaction result:', txResult);
+                    
+                    // Wait for transaction to be confirmed
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    // Increment sequence for next transaction
+                    key.sequence = (parseInt(key.sequence) + 1).toString();
+                }
+                
+                // Show success message
+                document.getElementById('status').innerHTML = "All transactions signed and broadcast successfully!";
+                
+                // Notify server
+                await fetch('/execute-transaction', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        transactions: transactions,
+                        user_id: userId
+                    })
+                });
+                
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('status').innerHTML = "Error: " + error.message;
+            }
+        }
+
+        // Add click handler when document is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('executeButton').onclick = executeTransaction;
+        });
+    </script>
+</body>
+</html> 

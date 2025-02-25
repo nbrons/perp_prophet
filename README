@@ -1,0 +1,4 @@
+python3 -m venv bot-venv
+source bot-venv/bin/activate
+pip install python-telegram-bot
+python bot.py
