@@ -1,4 +1,13 @@
+To run this bot, you need to first create a Telegram bot and get the token. you also need to setup ngrok and get the auth token. You can add those tokens to a .env file, and then follow the below steps:
+
+# Install dependencies
 python3 -m venv bot-venv
 source bot-venv/bin/activate
 pip install python-telegram-bot
+
+# Setup  environment variables
+cp .env.example .env
+
+# Run the bot
 python bot.py
+python web_server.py
