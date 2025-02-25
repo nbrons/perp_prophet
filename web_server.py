@@ -15,8 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Configure ngrok
 ngrok_token = os.getenv('NGROK_AUTH_TOKEN')
@@ -62,24 +62,12 @@ def connect_wallet():
     logger.info(f"Received wallet connection request: {data}")
     wallet_address = data.get('wallet_address')
     telegram_user_id = data.get('telegram_user_id')
-    pub_key = data.get('pub_key')
     
     logger.info(f"Processing wallet connection for address: {wallet_address}")
     
-    if wallet_address and telegram_user_id and pub_key:
+    if wallet_address and telegram_user_id:
         save_wallet(telegram_user_id, wallet_address)
         logger.info(f"Saved wallet connection for user {telegram_user_id}")
-        # Save public key to private_keys.json
-        with open('private_keys.json', 'r+') as f:
-            try:
-                keys = json.load(f)
-            except json.JSONDecodeError:
-                keys = {}
-            keys[wallet_address] = {"pub_key": pub_key}
-            f.seek(0)
-            json.dump(keys, f)
-            f.truncate()
-        logger.info(f"Saved public key for wallet {wallet_address}")
         return jsonify({'status': 'success'})
     logger.error("Missing required data for wallet connection")
     return jsonify({'status': 'error', 'message': 'Missing required data'}), 400

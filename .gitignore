@@ -38,5 +38,5 @@ env/
 *.log
 
 # Local data
-private_keys.json
+connected_wallets.json
 server_url.txt 

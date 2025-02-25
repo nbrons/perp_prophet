@@ -3,7 +3,6 @@
 <head>
     <title>Wallet Connect</title>
     <script src="https://unpkg.com/@keplr-wallet/types@0.11.3/build/index.js"></script>
-    <script src="https://unpkg.com/@injectivelabs/sdk-ts/dist/index.js"></script>
 </head>
 <body>
     <h1>Connect Your Wallet</h1>
@@ -49,7 +48,7 @@
             }
         };
 
-        async function connectWallet() {
+        const connectWallet = async () => {
             const urlParams = new URLSearchParams(window.location.search);
             const telegram_user_id = urlParams.get('telegram_user_id');
             
@@ -66,39 +65,19 @@
                 await window.keplr.enable("injective-1");
 
                 // Get the offline signer
-                const offlineSigner = window.keplr.getOfflineSigner("injective-1");
-
-                // Get user's Injective address
-                const accounts = await offlineSigner.getAccounts();
-                const account = accounts[0];
+                const accounts = await window.keplr.getOfflineSigner("injective-1").getAccounts();
+                const wallet_address = accounts[0].address;
                 
-                // Get the public key
-                const pubKey = await window.keplr.getKey("injective-1");
-                
-                // Convert address to Injective format if needed
-                let injectiveAddress = account.address;
-                if (!injectiveAddress.startsWith('inj')) {
-                    const { bech32 } = await import('@injectivelabs/sdk-ts');
-                    injectiveAddress = bech32.encode('inj', bech32.decode(account.address).data);
-                }
-                
-                // Convert pubKey to base64 without using Buffer
-                const pubKeyBase64 = btoa(String.fromCharCode.apply(null, pubKey.pubKey));
-                
-                // Send to backend - update URL to use window.location.origin
-                const response = await fetch(window.location.origin + '/connect-wallet', {
+                // Send wallet info to server
+                const response = await fetch('/connect-wallet', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        wallet_address: injectiveAddress,
+                        wallet_address: wallet_address,
                         telegram_user_id: telegram_user_id,
-                        pub_key: {
-                            type: pubKey.algo,
-                            value: pubKeyBase64
-                        }
-                    }),
+                    })
                 });
 
                 const result = await response.json();
