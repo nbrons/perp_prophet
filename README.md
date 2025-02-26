@@ -1,3 +1,14 @@
+## Getting Your Telegram Bot Token
+1. Open Telegram and search for "@BotFather"
+2. Start a chat with BotFather and send `/newbot`
+3. Follow the prompts:
+   - Enter a name for your bot
+   - Enter a username for your bot (must end in 'bot')
+4. BotFather will give you a token like this: `123456789:ABCdefGHIjklmNOPQrstUVwxyz`
+5. Copy this token to your .env file
+
+Note: Keep your token secure! Anyone with your token can control your bot.
+
 ## Setup
 1. Copy .env.example to .env
 2. Fill in your Telegram Bot Token and Ngrok Auth Token in .env
