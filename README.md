@@ -40,7 +40,23 @@ The bot integrates with Injective's iAgent for position analysis. To set up:
    OPENAI_API_KEY=your_openai_api_key_here
    ```
 
-3. Run the iAgent Docker container:
+3. Create a hello_main agent on mainnet:
+   ```bash
+   # Create agents_config.yaml
+   echo "hello_main:
+     network: mainnet" > agents_config.yaml
+
+   # Run iAgent and create a new agent
+   cd iAgent
+   python quickstart.py
+   
+   # In the quickstart CLI, enter these commands:
+   # switch_network mainnet
+   # create_agent hello_main
+   # The agent's private key and address will be displayed - copy these to your agents_config.yaml
+   ```
+
+4. Run the iAgent Docker container:
    ```bash
    cd iAgent
    docker build -t injective-agent .
@@ -51,7 +67,7 @@ The bot integrates with Injective's iAgent for position analysis. To set up:
      injective-agent
    ```
 
-4. Or you can run the prebuilt image:
+5. Or you can run the prebuilt image:
    ```bash
    docker run -d -p 5000:5000 \
      -e OPENAI_API_KEY="$OPENAI_API_KEY" \
@@ -60,9 +76,18 @@ The bot integrates with Injective's iAgent for position analysis. To set up:
      ghcr.io/injectivelabs/iagent:latest
    ```
 
-5. Verify the container is running:
+6. Verify the container is running:
    ```
    docker ps | grep injective-agent
    ```
+
+7. Verify the agent is working properly:
+   ```bash
+   curl -X POST http://localhost:5000/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message":"Hello, how are you?", "session_id":"test", "agent_id":"hello_main", "agent_key":"YOUR_PRIVATE_KEY_HERE", "environment":"mainnet"}'
+   ```
+
+> ⚠️ **Security Warning**: Keep your private keys secure! Never commit agents_config.yaml to Git.
 
 Once set up, users can analyze their positions by clicking the "Analyze with iAgent" button in the positions view. 
