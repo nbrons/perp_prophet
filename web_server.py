@@ -37,7 +37,8 @@ def setup_ngrok():
         os.system('pkill ngrok')
         
         # Start new tunnel
-        public_url = ngrok.connect(5000).public_url
+        http_tunnel = ngrok.connect(5001, bind_tls=True)
+        public_url = http_tunnel.public_url
         logger.info(f"ngrok tunnel created: {public_url}")
         
         # Store the public URL for use in bot.py
@@ -136,4 +137,4 @@ def execute_transaction():
         }), 400
 
 if __name__ == '__main__':
-    app.run(port=5000) 
+    app.run(port=5001) 

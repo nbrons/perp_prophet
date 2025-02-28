@@ -15,12 +15,54 @@ Note: Keep your token secure! Anyone with your token can control your bot.
 3. setup your venv: `python3 -m venv bot-venv`
 4. activate your venv: `source bot-venv/bin/activate`
 5. Install requirements: `pip install -r requirements.txt`
-6. Run the web server: `python web_server.py`
-7. In another terminal, run the bot: `python bot.py`
+6. Run the iAgent on port 5000: `docker run -d -p 5000:5000 -e OPENAI_API_KEY="$OPENAI_API_KEY" -v $(pwd)/agents_config.yaml:/app/agents_config.yaml --name injective-agent injectivelabs/iagent`
+7. Run the web server on port 5001: `python web_server.py`
+8. In another terminal, run the bot: `python bot.py`
 
 ## Files
 - bot.py: Main Telegram bot logic
 - web_server.py: Web server for wallet connection and transaction signing
 - wallet_storage.py: Handles wallet address storage
 - connect.html: Wallet connection page
-- transaction.html: Transaction signing page 
+- transaction.html: Transaction signing page
+
+## Setting up iAgent
+
+The bot integrates with Injective's iAgent for position analysis. To set up:
+
+1. Clone the iAgent repository:
+   ```
+   git clone https://github.com/InjectiveLabs/iAgent.git
+   ```
+
+2. Add your OpenAI API key to .env:
+   ```
+   OPENAI_API_KEY=your_openai_api_key_here
+   ```
+
+3. Run the iAgent Docker container:
+   ```bash
+   cd iAgent
+   docker build -t injective-agent .
+   docker run -d -p 5000:5000 \
+     -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+     -v $(pwd)/agents_config.yaml:/app/agents_config.yaml \
+     --name injective-agent \
+     injective-agent
+   ```
+
+4. Or you can run the prebuilt image:
+   ```bash
+   docker run -d -p 5000:5000 \
+     -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+     -v $(pwd)/agents_config.yaml:/app/agents_config.yaml \
+     --name injective-agent \
+     ghcr.io/injectivelabs/iagent:latest
+   ```
+
+5. Verify the container is running:
+   ```
+   docker ps | grep injective-agent
+   ```
+
+Once set up, users can analyze their positions by clicking the "Analyze with iAgent" button in the positions view. 

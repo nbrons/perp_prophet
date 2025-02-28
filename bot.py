@@ -26,6 +26,8 @@ from pyinjective.async_client import AsyncClient  # Add back for positions
 from eth_utils import remove_0x_prefix
 from bech32 import bech32_decode, convertbits
 import base64
+import requests
+from agent_client import AgentClient
 
 # Load environment variables
 load_dotenv()
@@ -57,12 +59,18 @@ NEPTUNE_LENDING_CONTRACT="inj1xemdknj74p3qsgxs47n9c7e4u2wnxc0cpv3dyz"
 HELIX_MARKET_CONTRACT="inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
 HELIX_MARKET_ID= "0x" + "0611780ba69656949525013d947713937e9171af326052c86f471ddbb759c747" 
 
+# iAgent configuration
+IAGENT_URL = "http://localhost:5000"  # Default port for iAgent docker
+
 # Add new constants for close commands
 CLOSE_COMMANDS = {
     'a': '/close_a',
     'b': '/close_b',
     'lend': '/close_lending'
 }
+
+# Initialize agent client
+agent_client = AgentClient()
 
 def get_server_url() -> str:
     """Get the server URL from file or environment"""
@@ -357,12 +365,19 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             positions_msg += "No active Neptune positions\n\n"
         
         # Add balances
-        positions_msg += "💼 Wallet Balances:\n"
-        positions_msg += f"INJ: {balances['INJ']}\n"
-        positions_msg += f"USDT: {balances['USDT']}\n"
+        if balances:
+            positions_msg += "💵 Wallet Balances:\n"
+            for token, amount in balances.items():
+                positions_msg += f"{token}: {amount}\n"
+        else:
+            positions_msg += "No balances found"
         
-        # Add refresh button
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_positions")]]
+        # Add buttons for position actions including iAgent analysis
+        keyboard = [
+            [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
+            [InlineKeyboardButton("Analyze With iAgent", callback_data="analyze_positions")],
+            [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         if update.callback_query:
@@ -511,6 +526,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text=message)
     elif query.data == "refresh_positions":
         await show_positions(update, context)
+    elif query.data == "analyze_positions":
+        await analyze_with_iagent(update, context)
 
 async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -759,6 +776,59 @@ def address_to_subaccount_id(address: str) -> str:
     padded_hex = hex_address.ljust(64, '0')
     
     return f"0x{padded_hex}"
+
+async def analyze_with_iagent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyze positions using iAgent"""
+    try:
+        user_id = update.effective_user.id
+        if not is_wallet_connected(user_id):
+            await update.callback_query.answer("Please connect your wallet first")
+            return
+            
+        wallet_address = get_wallet(user_id)
+        await update.callback_query.answer("Analyzing with iAgent...")
+        
+        # Get positions and market data
+        helix_positions = await get_helix_positions(wallet_address)
+        neptune_positions = await get_neptune_positions(wallet_address)
+        helix_rates = get_helix_rates()
+        neptune_borrow = get_neptune_borrow_rates()
+        neptune_lend = get_neptune_lend_rates()
+        
+        # Prepare market data
+        market_data = {
+            'helix_rates': helix_rates,
+            'neptune_borrow': neptune_borrow,
+            'neptune_lend': neptune_lend
+        }
+        
+        # Send to iAgent and get analysis
+        analysis = await agent_client.analyze_positions(
+            helix_positions, 
+            neptune_positions, 
+            market_data
+        )
+        
+        # Send analysis to user
+        keyboard = [
+            [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
+            [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            text=f"🔍 *iAgent Analysis*\n\n{analysis}",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing with iAgent: {str(e)}")
+        await update.callback_query.edit_message_text(
+            text=f"❌ Error: {str(e)}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Back to Positions", callback_data="view_positions")]
+            ])
+        )
 
 if __name__ == '__main__':
     application = Application.builder().token(TOKEN).build()
