@@ -25,6 +25,7 @@ from pyinjective.core.network import Network  # Add back for positions
 from pyinjective.async_client import AsyncClient  # Add back for positions
 from eth_utils import remove_0x_prefix
 from bech32 import bech32_decode, convertbits
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -245,27 +246,63 @@ async def get_helix_positions(wallet_address: str) -> list:
 async def get_neptune_positions(wallet_address: str) -> list:
     """Get Neptune lending positions"""
     try:
-        network = Network.mainnet()
-        client = AsyncClient(network)
+        # Neptune Market contract
+        NEPTUNE_MARKET_CONTRACT = "inj1nc7gjkf2mhp34a6gquhurg8qahnw5kxs5u3s4u"
         
-        # Create raw query string
-        query_data = f'{{"user_positions":{{"user":"{wallet_address}"}}}}'
+        def decode_base64_data(data):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    data[key] = decode_base64_data(value)
+            elif isinstance(data, list):
+                data = [decode_base64_data(item) for item in data]
+            elif isinstance(data, str):
+                try:
+                    data = base64.b64decode(data).decode('utf-8')
+                    # Try to parse JSON in case the decoded data is JSON
+                    data = json.loads(data)
+                except Exception:
+                    pass
+            return data
         
-        # Query Neptune contract for lending positions using smart contract state
+        # Create query string
+        query_data = f'{{"get_user_accounts": {{"addr": "{wallet_address}"}}}}'
+        
+        # Query Neptune contract
         response = await client.fetch_smart_contract_state(
-            address=NEPTUNE_LENDING_CONTRACT,
+            address=NEPTUNE_MARKET_CONTRACT,
             query_data=query_data
         )
         
+        # Decode base64 response
+        decoded_response = decode_base64_data(response)
+        
         positions = []
-        if response and 'data' in response:
-            data = json.loads(response['data'])
-            for position in data.get('user_positions', []):  # Updated response field
-                positions.append({
-                    'type': 'Lending',
-                    'amount': str(float(position['amount']) / 1e6),
-                    'apy': position.get('apy', 'N/A')
-                })
+        if decoded_response and 'data' in decoded_response:
+            data = decoded_response['data']
+            
+            # Process each subaccount
+            for subaccount in data:
+                account_info = subaccount[1]
+                
+                # Check debt pool accounts
+                for debt_pool in account_info.get('debt_pool_accounts', []):
+                    asset_info = debt_pool[0]
+                    pool_info = debt_pool[1]
+                    
+                    if 'native_token' in asset_info:
+                        denom = asset_info['native_token']['denom']
+                        if denom == 'inj':
+                            positions.append({
+                                'type': 'INJ Lending',
+                                'amount': str(float(pool_info['principal']) / 1e18),  # INJ has 18 decimals
+                                'shares': str(float(pool_info['shares']) / 1e18)
+                            })
+                        elif denom == 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7':
+                            positions.append({
+                                'type': 'USDT Lending',
+                                'amount': str(float(pool_info['principal']) / 1e6),  # USDT has 6 decimals
+                                'shares': str(float(pool_info['shares']) / 1e6)
+                            })
                 
         return positions
     except Exception as e:
@@ -280,12 +317,16 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Please connect your wallet first using /start")
             return
             
-        wallet_address = get_wallet(user_id)
-        
+        # wallet_address = get_wallet(user_id)
+        wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"
         # Get positions and balances
         helix_positions = await get_helix_positions(wallet_address)
-        # neptune_positions = await get_neptune_positions(wallet_address)
+        neptune_positions = await get_neptune_positions(wallet_address)
         balances = await get_wallet_balances(wallet_address)
+
+        print(f"Helix positions: {helix_positions}")
+        print(f"Neptune positions: {neptune_positions}")
+        print(f"Balances: {balances}")
         
         # Format positions message
         positions_msg = "Your Current Positions:\n\n"
@@ -300,15 +341,20 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Margin: {pos['margin']} USDT\n"
                     f"Leverage: {pos['leverage']}x\n\n"
                 )
+        else:
+            positions_msg += "🔄 No active Helix positions\n\n"
         
-        # # Add Neptune positions
-        # if neptune_positions:
-        #     positions_msg += "💰 Neptune Lending Positions:\n"
-        #     for pos in neptune_positions:
-        #         positions_msg += (
-        #             f"Amount: {pos['amount']} USDT\n"
-        #             f"APY: {pos['apy']}%\n\n"
-        #         )
+        # Add Neptune positions
+        if neptune_positions:
+            positions_msg += "💰 Neptune Lending Positions:\n"
+            for pos in neptune_positions:
+                positions_msg += (
+                    f"Type: {pos['type']}\n"
+                    f"Principal: {pos['amount']} {pos['type'].split()[0]}\n"  # Extract token from type
+                    f"Shares: {pos['shares']}\n\n"
+                )
+        else:
+            positions_msg += "No active Neptune positions\n\n"
         
         # Add balances
         positions_msg += "💼 Wallet Balances:\n"
