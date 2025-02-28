@@ -479,7 +479,7 @@ async def show_opportunities(update: Update, context: ContextTypes.DEFAULT_TYPE)
         neptune_borrow_rate_inj = neptune_borrow.get('INJ', 0) / 100
         collateral_interest_rate_usdt = neptune_lend.get('USDT', 0) / 100
         strategy_borrowed_value_b = strategy_supplied_value * avg_ltv
-        amount_paid_neptune_interest = strategy_borrowed_value_b * -1 * neptune_borrow_rate_inj
+        amount_paid_neptune_interest = strategy_borrowed_value_b * neptune_borrow_rate_inj
         amount_earned_helix_funding_rates = strategy_supplied_value * implied_helix_leverage * funding_rate
         amount_earned_collateral = strategy_supplied_value * collateral_interest_rate_usdt
         profits_b = amount_earned_helix_funding_rates - amount_paid_neptune_interest + amount_earned_collateral
