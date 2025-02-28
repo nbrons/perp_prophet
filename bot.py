@@ -54,8 +54,10 @@ HELX_DATA = os.getenv('HELIX_DATA_URL')
 NEPTUNE_BORROW = os.getenv('NEPTUNE_BORROW_URL')
 NEPTUNE_LEND = os.getenv('NEPTUNE_LEND_URL')
 
-# Contract addresses and network config
+# Constants for contract addresses
 NEPTUNE_LENDING_CONTRACT="inj1xemdknj74p3qsgxs47n9c7e4u2wnxc0cpv3dyz"
+HELIX_MARKET_CONTRACT="inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
+HELIX_MARKET_ID="0x" + "0611780ba69656949525013d947713937e9171af326052c86f471ddbb759c747"
 
 # Example market IDs - we'll fetch all positions dynamically
 # INJ/USDT PERP Market ID
@@ -374,60 +376,48 @@ async def get_neptune_positions(wallet_address: str) -> list:
         return []
 
 async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's current positions"""
+    """Show user's positions and balances"""
     try:
         user_id = update.effective_user.id
-        
-        # Check wallet connection
         if not is_wallet_connected(user_id):
-            await update.callback_query.edit_message_text(
-                text="Please connect your wallet first.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("Connect Wallet", callback_data="connect_wallet")
-                ]])
-            )
+            await update.message.reply_text("Please connect your wallet first using /start")
             return
             
-        await update.callback_query.answer("Loading positions...")
-        
-        # Get wallet address
         # wallet_address = get_wallet(user_id)
-        wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"  # For testing
-        
-        # Get positions from both protocols
+        wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"
+        # Get positions and balances
         helix_positions = await get_helix_positions(wallet_address)
         neptune_positions = await get_neptune_positions(wallet_address)
-        
-        # Get balances
         balances = await get_wallet_balances(wallet_address)
         
-        # Log results for debugging
-        logger.info(f"Helix positions: {helix_positions}")
-        logger.info(f"Neptune positions: {neptune_positions}")
-        logger.info(f"Balances: {balances}")
+        print(f"Helix positions: {helix_positions}")
+        print(f"Neptune positions: {neptune_positions}")
+        print(f"Balances: {balances}")
         
-        # Format positions into message
-        positions_msg = f"*Your Positions*\n\n"
+        # Format positions message
+        positions_msg = "Your Current Positions:\n\n"
         
+        # Add Helix positions
         if helix_positions:
-            positions_msg += "📊 *Helix Positions:*\n"
+            positions_msg += "\n📊 *Helix Positions:*\n"
             for pos in helix_positions:
                 positions_msg += f"- {pos['market_id']}: {pos['type']} {pos['quantity']:.4f} @ {pos['entry_price']:.2f}\n"
                 positions_msg += f"  Margin: {pos['margin']:.2f} USDT | Funding: {pos['funding']:.6f}\n"
         else:
-            positions_msg += "No Helix positions found\n"
+            positions_msg += "\n🔄 No active Helix positions\n\n"
         
+        # Add Neptune positions
         if neptune_positions:
-            positions_msg += "\n💧 *Neptune Positions:*\n"
+            positions_msg += "\n💰 Neptune Lending Positions:\n"
             for pos in neptune_positions:
                 positions_msg += f"- {pos['type']} {pos['amount']} {pos['token']}\n"
                 positions_msg += f"  Rate: {pos['rate']}%\n"
         else:
-            positions_msg += "\nNo Neptune positions found\n"
+            positions_msg += "\nNo active Neptune positions\n\n"
         
         # Add balances
         if balances:
-            positions_msg += "\n💵 *Wallet Balances:*\n"
+            positions_msg += "\n💵 Wallet Balances:\n"
             for token, amount in balances.items():
                 positions_msg += f"{token}: {amount}\n"
         else:
@@ -436,17 +426,19 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add buttons for position actions including iAgent analysis
         keyboard = [
             [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
-            [InlineKeyboardButton("Analyze With iAgent", callback_data="analyze_positions")],
-            [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton("Analyze With iAgent", callback_data="analyze_positions")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.callback_query.edit_message_text(
-            text=positions_msg, 
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        # Add a timestamp to ensure content is different on each refresh
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        positions_msg += f"\n\nLast updated: {timestamp}"
         
+        if update.callback_query:
+            await update.callback_query.edit_message_text(positions_msg, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(positions_msg, reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error fetching positions: {str(e)}")
         error_message = f"Error fetching positions: {str(e)}"
@@ -557,6 +549,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_opportunities(update, context)
     elif query.data == "view_positions":
         await show_positions(update, context)
+    elif query.data == "back_to_menu":
+        # Back to menu - call the same function as /start
+        await start(update, context)
     elif query.data in ["execute_a", "execute_b", "execute_lending"]:
         strategy = {
             "execute_a": "Strategy A",
@@ -858,7 +853,7 @@ async def analyze_with_iagent(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Send analysis to user
         keyboard = [
             [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
-            [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton("Back to Menu", callback_data="start")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
