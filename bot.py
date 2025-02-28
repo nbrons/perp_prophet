@@ -56,8 +56,10 @@ NEPTUNE_LEND = os.getenv('NEPTUNE_LEND_URL')
 
 # Contract addresses and network config
 NEPTUNE_LENDING_CONTRACT="inj1xemdknj74p3qsgxs47n9c7e4u2wnxc0cpv3dyz"
-HELIX_MARKET_CONTRACT="inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
-HELIX_MARKET_ID= "0x" + "0611780ba69656949525013d947713937e9171af326052c86f471ddbb759c747" 
+
+# Example market IDs - we'll fetch all positions dynamically
+# INJ/USDT PERP Market ID
+INJ_USDT_PERP_MARKET_ID = "0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963" 
 
 # iAgent configuration
 IAGENT_URL = "http://localhost:5000"  # Default port for iAgent docker
@@ -68,6 +70,19 @@ CLOSE_COMMANDS = {
     'b': '/close_b',
     'lend': '/close_lending'
 }
+
+def get_subaccount_id(address, subaccount_index=0):
+    """Convert an Injective address to a subaccount ID"""
+    hrp, data = bech32_decode(address)
+    if not data:
+        raise ValueError(f"Invalid Injective address: {address}")
+    
+    # Convert from bech32 to eth address format
+    eth_address = "0x" + "".join(["{:02x}".format(d) for d in convertbits(data, 5, 8, False)])
+    
+    # Create subaccount ID by padding with zeros
+    subaccount_id = eth_address.lower() + format(subaccount_index, '024x')
+    return subaccount_id
 
 # Initialize agent client
 agent_client = AgentClient()
@@ -193,69 +208,106 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Hello! How can I help you?", reply_markup=reply_markup)
 
+
 async def get_wallet_balances(wallet_address: str) -> dict:
-    """Get INJ and USDT balances for a wallet"""
+    """Get token balances for a wallet"""
     try:
         network = Network.mainnet()
-        client = AsyncClient(network)
-        
-        # Get bank balances
-        bank_balances = await client.fetch_bank_balances(wallet_address)
-        
-        print(f"Raw bank balances response: {bank_balances}")  # Debug log
-        
-        balances = {
-            'INJ': '0',
-            'USDT': '0'
+        client = AsyncClient(network=network)
+
+        # Fetch balances from chain
+        response = await client.fetch_bank_balances(wallet_address)
+        logger.info(f"Raw bank balances response: {response}")
+            
+        # Map of denom to token symbol and decimals
+        token_map = {
+            'inj': {'symbol': 'INJ', 'decimals': 1e18},
+            'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7': {'symbol': 'USDT', 'decimals': 1e6},
+                # Add other tokens as needed
         }
-        
-        # Parse balances
-        for balance in bank_balances.get('balances', []):
-            if balance.get('denom') == 'inj':
-                balances['INJ'] = str(float(balance.get('amount', '0')) / 1e18)  # Convert from wei
-            elif balance.get('denom') == 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7':
-                balances['USDT'] = str(float(balance.get('amount', '0')) / 1e6)  # Convert from micro
-                
+            
+        balances = {}
+        if 'balances' in response:
+            for balance in response['balances']:
+                denom = balance['denom']
+                if denom in token_map:
+                    token_info = token_map[denom]
+                    amount = float(balance['amount']) / token_info['decimals']
+                    balances[token_info['symbol']] = f"{amount:.6f}"
+            
         return balances
     except Exception as e:
-        logger.error(f"Error fetching balances: {str(e)}")
-        raise
+        logger.error(f"Error fetching wallet balances: {str(e)}")
+        return {}
 
 async def get_helix_positions(wallet_address: str) -> list:
-    """Get open Helix positions for a wallet"""
+    """Get all Helix positions for a wallet across all markets"""
     try:
+        # Convert wallet address to subaccount ID (first subaccount)
+        subaccount_id = get_subaccount_id(wallet_address, 0)
+        
+        # Set up network and client
         network = Network.mainnet()
-        client = AsyncClient(network)
+        client = AsyncClient(network=network)
         
-        # Convert Injective address to subaccount ID
-        subaccount_id = address_to_subaccount_id(wallet_address)
-        
-        # Get positions from Helix contract
-        positions = await client.fetch_derivative_positions_v2(
-            market_ids=[HELIX_MARKET_ID],
-            subaccount_id=subaccount_id,
-            subaccount_total_positions=True
+        # Fetch all positions for the subaccount without specifying market
+        positions_response = await client.fetch_chain_subaccount_positions(
+            subaccount_id=subaccount_id
         )
         
         formatted_positions = []
-        for pos in positions.get('positions', []):
-            formatted_positions.append({
-                'type': 'LONG' if pos['position_type'] == 'LONG' else 'SHORT',
-                'size': str(float(pos['quantity']) / 1e6),
-                'margin': str(float(pos['margin']) / 1e6),
-                'leverage': str(float(pos['effective_leverage']))
-            })
-            
+        
+        if positions_response and 'state' in positions_response:
+            for pos in positions_response['state']:
+                # Skip if no position data
+                if 'position' not in pos:
+                    continue
+                    
+                # Get market data to identify the trading pair
+                market_id = pos['marketId']
+                try:
+                    market_data = await client.fetch_derivative_market(market_id=market_id)
+                    if 'market' in market_data and 'ticker' in market_data['market']:
+                        market_symbol = market_data['market']['ticker']
+                    else:
+                        market_symbol = market_id[:10] + '...'  # Shortened version of market ID
+                except Exception as e:
+                    logger.warning(f"Failed to get market info for {market_id}: {str(e)}")
+                    # If we can't get market data, use the market ID as fallback
+                    market_symbol = market_id[:10] + '...'
+                
+                # Interpret position data
+                position = pos['position']
+                is_long = position.get('isLong', False)
+                quantity = float(position.get('quantity', 0))
+                position_type = "LONG" if is_long else "SHORT"
+                
+                formatted_pos = {
+                    'market_id': market_symbol,
+                    'type': position_type,
+                    'entry_price': float(position.get('entryPrice', 0)) / 1e18,  # Adjust for decimals
+                    'quantity': abs(quantity) / 1e18,  # Adjust for decimals
+                    'margin': float(position.get('margin', 0)) / 1e18,  # Adjust for decimals
+                    'funding': float(position.get('cumulativeFundingEntry', 0)) / 1e18  # Adjust for decimals
+                }
+                formatted_positions.append(formatted_pos)
+        
+        # Debug log
+        logger.info(f"Found {len(formatted_positions)} Helix positions")
+        
         return formatted_positions
     except Exception as e:
         logger.error(f"Error fetching Helix positions: {str(e)}")
-        raise
+        return []
 
 async def get_neptune_positions(wallet_address: str) -> list:
     """Get Neptune lending positions"""
     try:
         # Neptune Market contract
         NEPTUNE_MARKET_CONTRACT = "inj1nc7gjkf2mhp34a6gquhurg8qahnw5kxs5u3s4u"
+        
+        network = Network.mainnet()
+        client = AsyncClient(network=network)
         
         def decode_base64_data(data):
             if isinstance(data, dict):
@@ -275,7 +327,7 @@ async def get_neptune_positions(wallet_address: str) -> list:
         # Create query string
         query_data = f'{{"get_user_accounts": {{"addr": "{wallet_address}"}}}}'
         
-        # Query Neptune contract
+        # Fetch user positions
         response = await client.fetch_smart_contract_state(
             address=NEPTUNE_MARKET_CONTRACT,
             query_data=query_data
@@ -303,74 +355,83 @@ async def get_neptune_positions(wallet_address: str) -> list:
                             positions.append({
                                 'type': 'INJ Lending',
                                 'amount': str(float(pool_info['principal']) / 1e18),  # INJ has 18 decimals
-                                'shares': str(float(pool_info['shares']) / 1e18)
+                                'shares': str(float(pool_info['shares']) / 1e18),
+                                'token': 'INJ',
+                                'rate': '8.25'  # Placeholder rate - could be dynamic in future
                             })
                         elif denom == 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7':
                             positions.append({
                                 'type': 'USDT Lending',
                                 'amount': str(float(pool_info['principal']) / 1e6),  # USDT has 6 decimals
-                                'shares': str(float(pool_info['shares']) / 1e6)
+                                'shares': str(float(pool_info['shares']) / 1e6),
+                                'token': 'USDT',
+                                'rate': '12.5'  # Placeholder rate - could be dynamic in future
                             })
-                
+        
         return positions
     except Exception as e:
         logger.error(f"Error fetching Neptune positions: {str(e)}")
-        raise
+        return []
 
 async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's positions and balances"""
+    """Show user's current positions"""
     try:
         user_id = update.effective_user.id
+        
+        # Check wallet connection
         if not is_wallet_connected(user_id):
-            await update.message.reply_text("Please connect your wallet first using /start")
+            await update.callback_query.edit_message_text(
+                text="Please connect your wallet first.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Connect Wallet", callback_data="connect_wallet")
+                ]])
+            )
             return
             
+        await update.callback_query.answer("Loading positions...")
+        
+        # Get wallet address
         # wallet_address = get_wallet(user_id)
-        wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"
-        # Get positions and balances
+        wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"  # For testing
+        
+        # Get positions from both protocols
         helix_positions = await get_helix_positions(wallet_address)
         neptune_positions = await get_neptune_positions(wallet_address)
+        
+        # Get balances
         balances = await get_wallet_balances(wallet_address)
-
-        print(f"Helix positions: {helix_positions}")
-        print(f"Neptune positions: {neptune_positions}")
-        print(f"Balances: {balances}")
         
-        # Format positions message
-        positions_msg = "Your Current Positions:\n\n"
+        # Log results for debugging
+        logger.info(f"Helix positions: {helix_positions}")
+        logger.info(f"Neptune positions: {neptune_positions}")
+        logger.info(f"Balances: {balances}")
         
-        # Add Helix positions
+        # Format positions into message
+        positions_msg = f"*Your Positions*\n\n"
+        
         if helix_positions:
-            positions_msg += "🔄 Helix Positions:\n"
+            positions_msg += "📊 *Helix Positions:*\n"
             for pos in helix_positions:
-                positions_msg += (
-                    f"Type: {pos['type']}\n"
-                    f"Size: {pos['size']} USDT\n"
-                    f"Margin: {pos['margin']} USDT\n"
-                    f"Leverage: {pos['leverage']}x\n\n"
-                )
+                positions_msg += f"- {pos['market_id']}: {pos['type']} {pos['quantity']:.4f} @ {pos['entry_price']:.2f}\n"
+                positions_msg += f"  Margin: {pos['margin']:.2f} USDT | Funding: {pos['funding']:.6f}\n"
         else:
-            positions_msg += "🔄 No active Helix positions\n\n"
+            positions_msg += "No Helix positions found\n"
         
-        # Add Neptune positions
         if neptune_positions:
-            positions_msg += "💰 Neptune Lending Positions:\n"
+            positions_msg += "\n💧 *Neptune Positions:*\n"
             for pos in neptune_positions:
-                positions_msg += (
-                    f"Type: {pos['type']}\n"
-                    f"Principal: {pos['amount']} {pos['type'].split()[0]}\n"  # Extract token from type
-                    f"Shares: {pos['shares']}\n\n"
-                )
+                positions_msg += f"- {pos['type']} {pos['amount']} {pos['token']}\n"
+                positions_msg += f"  Rate: {pos['rate']}%\n"
         else:
-            positions_msg += "No active Neptune positions\n\n"
+            positions_msg += "\nNo Neptune positions found\n"
         
         # Add balances
         if balances:
-            positions_msg += "💵 Wallet Balances:\n"
+            positions_msg += "\n💵 *Wallet Balances:*\n"
             for token, amount in balances.items():
                 positions_msg += f"{token}: {amount}\n"
         else:
-            positions_msg += "No balances found"
+            positions_msg += "\nNo balances found"
         
         # Add buttons for position actions including iAgent analysis
         keyboard = [
@@ -380,18 +441,21 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        if update.callback_query:
-            await update.callback_query.edit_message_text(positions_msg, reply_markup=reply_markup)
-        else:
-            await update.message.reply_text(positions_msg, reply_markup=reply_markup)
-            
+        await update.callback_query.edit_message_text(
+            text=positions_msg, 
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        
     except Exception as e:
-        error_msg = f"Error fetching positions: {str(e)}"
-        logger.error(error_msg)
-        if update.callback_query:
-            await update.callback_query.edit_message_text(error_msg)
-        else:
-            await update.message.reply_text(error_msg)
+        logger.error(f"Error fetching positions: {str(e)}")
+        error_message = f"Error fetching positions: {str(e)}"
+        await update.callback_query.edit_message_text(
+            text=error_message,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")
+            ]])
+        )
 
 async def show_opportunities(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show available opportunities"""
@@ -677,7 +741,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         strategy_explanation = (
             "Strategy B - Delta Neutral INJ Long\n\n"
             "This will execute the following transactions:\n"
-            "1. Borrow INJ from Neptune lending\n"
+            "1. Borrow INJ from Neptune\n"
             "2. Swap borrowed INJ to USDT\n"
             "3. Use USDT as collateral to open INJ long on Helix\n\n"
             f"Borrow Amount: {amount} INJ\n"
@@ -758,24 +822,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.effective_message:
         error_message = "Sorry, something went wrong. Please try again later."
         await update.effective_message.reply_text(error_message)
-
-def address_to_subaccount_id(address: str) -> str:
-    """Convert Injective address to subaccount ID"""
-    # Decode bech32 address
-    _, data = bech32_decode(address)
-    if data is None:
-        raise ValueError(f"Invalid address: {address}")
-    
-    # Convert 5-bit to 8-bit encoding
-    data = convertbits(data, 5, 8, False)
-    if data is None:
-        raise ValueError(f"Could not convert address: {address}")
-    
-    # Convert to hex and pad to 64 characters
-    hex_address = ''.join(f'{x:02x}' for x in data)
-    padded_hex = hex_address.ljust(64, '0')
-    
-    return f"0x{padded_hex}"
 
 async def analyze_with_iagent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Analyze positions using iAgent"""
