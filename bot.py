@@ -383,8 +383,8 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Please connect your wallet first using /start")
             return
             
-        # wallet_address = get_wallet(user_id)
-        wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"
+        wallet_address = get_wallet(user_id)
+        # wallet_address = "inj142aemh62w2fpqjws0yre5936ts9x9e93fj8322"
         # Get positions and balances
         helix_positions = await get_helix_positions(wallet_address)
         neptune_positions = await get_neptune_positions(wallet_address)
@@ -599,6 +599,10 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(context.args[0])
         
         logger.info(f"Creating Strategy A transactions for wallet {wallet_address} with amount {amount}")
+
+        prices = await client.fetch_derivative_mid_price_and_tob(
+        market_id=INJ_PERP_MARKET_ID,
+        )
         # Create transaction sequence for Strategy A
         tx_sequence = [{
             # 1. Borrow USDT from Neptune
@@ -620,7 +624,7 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         }, {
             # 2. Open Short position on Helix using borrowed USDT
-            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateSpotMarketOrder",
+            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateDerivativeMarketOrder",
             "value": {
                 "sender": wallet_address,
                 "order": {
@@ -628,7 +632,7 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "order_info": {
                         "subaccount_id": get_subaccount_id(wallet_address),
                         "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
-                        "price": "0.000000000013199000", # TODO: get current price
+                        "price": prices['bestSellPrice'],
                         "quantity": str(int(amount * 1e6)) * 3, # 3x leverage
                     },
                     "order_type": "SELL",
@@ -670,6 +674,10 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(context.args[0])
         
         logger.info(f"Creating Strategy B transactions for wallet {wallet_address} with amount {amount}")
+
+        prices = await client.fetch_derivative_mid_price_and_tob(
+        market_id=INJ_PERP_MARKET_ID,
+        )
         
         # Create transaction sequence for Strategy B
         tx_sequence = [{
@@ -700,7 +708,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "order_info": {
                         "subaccount_id": get_subaccount_id(wallet_address),
                         "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
-                        "price": "0.000000000013199000", # TODO: get current price
+                        "price": prices['midPrice'],
                         "quantity": str(int(amount * 1e18))
                     },
                     "order_type": "SELL",
@@ -709,7 +717,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         }, {
             # 3. Open Long position using swapped USDT
-            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateSpotMarketOrder",
+            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateDerivativeMarketOrder",
             "value": {
                 "sender": wallet_address,
                 "order": {
@@ -717,7 +725,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "order_info": {
                         "subaccount_id": get_subaccount_id(wallet_address),
                         "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
-                        "price": "0.000000000013199000", # TODO: get current price
+                        "price": prices['bestBuyPrice'],
                         "quantity": str(int(amount * 1e6)) * 3, # 3x leverage
                     },
                     "order_type": "BUY",
@@ -771,13 +779,15 @@ async def lend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "contract": NEPTUNE_LENDING_CONTRACT,
                 "msg": {
                     "lend": {
-                        "amount": str(int(amount * 1e6))
+                        "account_index": 0,
+                        "amount": str(int(amount * 1e18)),  # INJ has 18 decimals
+                        "asset_info": {
+                            "native_token": {
+                                "denom": "inj"
+                            }
+                        },
                     }
-                },
-                "funds": [{
-                    "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
-                    "amount": str(int(amount * 1e6))
-                }]
+                }
             }
         }]
         
