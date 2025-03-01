@@ -57,7 +57,7 @@ NEPTUNE_LEND = os.getenv('NEPTUNE_LEND_URL')
 # Constants for contract addresses
 NEPTUNE_LENDING_CONTRACT="inj1xemdknj74p3qsgxs47n9c7e4u2wnxc0cpv3dyz"
 HELIX_MARKET_CONTRACT="inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
-HELIX_MARKET_ID="0x" + "0611780ba69656949525013d947713937e9171af326052c86f471ddbb759c747"
+INJ_PERP_MARKET_ID="0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963"
 
 # Example market IDs - we'll fetch all positions dynamically
 # INJ/USDT PERP Market ID
@@ -599,7 +599,6 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(context.args[0])
         
         logger.info(f"Creating Strategy A transactions for wallet {wallet_address} with amount {amount}")
-        
         # Create transaction sequence for Strategy A
         tx_sequence = [{
             # 1. Borrow USDT from Neptune
@@ -609,36 +608,35 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "contract": NEPTUNE_LENDING_CONTRACT,
                 "msg": {
                     "borrow": {
-                        "asset": {
+                        "account_index": 0,
+                        "amount": str(int(amount * 1e6)),
+                        "asset_info": {
                             "native_token": {
                                 "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"
                             }
-                        },
-                        "amount": str(int(amount * 1e6))
+                        }
                     }
                 }
             }
         }, {
             # 2. Open Short position on Helix using borrowed USDT
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateSpotMarketOrder",
             "value": {
                 "sender": wallet_address,
-                "contract": HELIX_MARKET_CONTRACT,
-                "msg": {
-                    "open_position": {
-                        "position_type": "SHORT",
-                        "market_id": HELIX_MARKET_ID,
-                        "margin_amount": str(int(amount * 1e6)),
-                        "leverage": "5"
-                    }
+                "order": {
+                    "market_id": INJ_PERP_MARKET_ID,
+                    "order_info": {
+                        "subaccount_id": get_subaccount_id(wallet_address),
+                        "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
+                        "price": "0.000000000013199000", # TODO: get current price
+                        "quantity": str(int(amount * 1e6)) * 3, # 3x leverage
+                    },
+                    "order_type": "SELL",
+                    "trigger_price": "0.000000000000000000"
                 },
-                "funds": [{
-                    "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
-                    "amount": str(int(amount * 1e6))
-                }]
             }
         }]
-
+        
         strategy_explanation = (
             "Strategy A - Delta Neutral INJ Short\n\n"
             "This will execute the following transactions:\n"
@@ -682,54 +680,49 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "contract": NEPTUNE_LENDING_CONTRACT,
                 "msg": {
                     "borrow": {
-                        "asset": {
+                        "account_index": 0,
+                        "amount": str(int(amount * 1e18)),  # INJ has 18 decimals
+                        "asset_info": {
                             "native_token": {
                                 "denom": "inj"
                             }
                         },
-                        "amount": str(int(amount * 1e18))  # INJ has 18 decimals
                     }
                 }
             }
         }, {
             # 2. Swap INJ to USDT on Helix
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateSpotMarketOrder",
             "value": {
                 "sender": wallet_address,
-                "contract": HELIX_MARKET_CONTRACT,
-                "msg": {
-                    "swap_exact_in": {
-                        "input_coin": {
-                            "denom": "inj",
-                            "amount": str(int(amount * 1e18))
-                        },
-                        "output_denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
-                        "slippage": "0.01"  # 1% slippage
-                    }
-                },
-                "funds": [{
-                    "denom": "inj",
-                    "amount": str(int(amount * 1e18))
-                }]
+                "order": {
+                    "market_id": INJ_PERP_MARKET_ID,
+                    "order_info": {
+                        "subaccount_id": get_subaccount_id(wallet_address),
+                        "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
+                        "price": "0.000000000013199000", # TODO: get current price
+                        "quantity": str(int(amount * 1e18))
+                    },
+                    "order_type": "SELL",
+                    "trigger_price": "0.000000000000000000"
+                }
             }
         }, {
             # 3. Open Long position using swapped USDT
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateSpotMarketOrder",
             "value": {
                 "sender": wallet_address,
-                "contract": HELIX_MARKET_CONTRACT,
-                "msg": {
-                    "open_position": {
-                        "position_type": "LONG",
-                        "market_id": HELIX_MARKET_ID,
-                        "margin_amount": str(int(amount * 1e6)),
-                        "leverage": "5"
-                    }
+                "order": {
+                    "market_id": INJ_PERP_MARKET_ID,
+                    "order_info": {
+                        "subaccount_id": get_subaccount_id(wallet_address),
+                        "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
+                        "price": "0.000000000013199000", # TODO: get current price
+                        "quantity": str(int(amount * 1e6)) * 3, # 3x leverage
+                    },
+                    "order_type": "BUY",
+                    "trigger_price": "0.000000000000000000"
                 },
-                "funds": [{
-                    "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
-                    "amount": str(int(amount * 1e6))
-                }]
             }
         }]
 
