@@ -871,7 +871,7 @@ async def lend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Create a properly structured transaction following Injective SDK pattern
         transactions = [{
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,

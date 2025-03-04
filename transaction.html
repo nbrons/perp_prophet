@@ -114,23 +114,94 @@
                     console.log('Signed transaction:', signedResponse);
                     
                     // Send the transaction
-                    const broadcastEndpoint = "https://sentry.exchange.grpc-web.injective.network/cosmos/tx/v1beta1/txs";
+                    const broadcastEndpoint = "https://lcd.injective.network/cosmos/tx/v1beta1/txs";
+                    
+                    // Prepare a proper transaction using Cosmos SDK format
+                    const tx = {
+                        body: {
+                            messages: signedResponse.signed.msgs.map(msg => {
+                                // Convert from Amino format to Protobuf format
+                                if (msg.type === "/injective.wasmx.v1.MsgExecuteContractCompact") {
+                                    return {
+                                        "@type": "/injective.wasmx.v1.MsgExecuteContractCompact",
+                                        "sender": msg.value.sender,
+                                        "contract": msg.value.contract,
+                                        "msg": msg.value.msg,
+                                        "funds": msg.value.funds
+                                    };
+                                }
+                                return {
+                                    "@type": msg.type,
+                                    ...msg.value
+                                };
+                            }),
+                            memo: signedResponse.signed.memo,
+                            timeout_height: "0",
+                            extension_options: [],
+                            non_critical_extension_options: []
+                        },
+                        auth_info: {
+                            signer_infos: [{
+                                public_key: {
+                                    "@type": "/cosmos.crypto.secp256k1.PubKey",
+                                    "key": signedResponse.signature.pub_key.value
+                                },
+                                mode_info: {
+                                    single: {
+                                        mode: "SIGN_MODE_LEGACY_AMINO_JSON"
+                                    }
+                                },
+                                sequence: signedResponse.signed.sequence
+                            }],
+                            fee: {
+                                amount: signedResponse.signed.fee.amount,
+                                gas_limit: signedResponse.signed.fee.gas
+                            }
+                        },
+                        signatures: [signedResponse.signature.signature]
+                    };
+
+                    console.log('Formatted transaction:', JSON.stringify(tx, null, 2));
+                    
+                    // Encode the transaction to base64
+                    const txBytes = btoa(JSON.stringify(tx));
                     
                     // Format the transaction for broadcasting
                     const broadcastBody = {
-                        tx_bytes: signedResponse.signed,
-                        mode: "BROADCAST_MODE_BLOCK"
+                        tx_bytes: txBytes,
+                        mode: "BROADCAST_MODE_SYNC"
                     };
+                    
+                    console.log('Broadcasting with body:', JSON.stringify(broadcastBody, null, 2));
                     
                     const txResponse = await fetch(broadcastEndpoint, {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/json',
+                            'Content-Type': 'application/json'
                         },
                         body: JSON.stringify(broadcastBody)
                     });
                     
-                    const txResult = await txResponse.json();
+                    // Add error handling for the fetch response
+                    if (!txResponse.ok) {
+                        const errorText = await txResponse.text();
+                        console.error('Failed to broadcast transaction:', errorText);
+                        throw new Error(`Broadcast failed: ${txResponse.status} ${txResponse.statusText} - ${errorText}`);
+                    }
+                    
+                    // Better error handling for JSON parsing
+                    let txResult;
+                    try {
+                        const responseText = await txResponse.text();
+                        console.log('Raw response:', responseText);
+                        if (responseText.trim() === '') {
+                            throw new Error('Empty response from broadcast endpoint');
+                        }
+                        txResult = JSON.parse(responseText);
+                    } catch (e) {
+                        console.error('Failed to parse JSON response:', e);
+                        throw new Error(`Failed to parse response: ${e.message}`);
+                    }
                     
                     console.log('Transaction result:', txResult);
                     
