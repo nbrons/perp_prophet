@@ -629,7 +629,7 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tx_sequence = [
             {
             # 1. Lend INJ on Neptune
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
@@ -641,7 +641,7 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             {
             # 2. Deposit INJ as collateral on Neptune
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
@@ -659,7 +659,7 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             {
             # 1. Borrow USDT from Neptune
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
@@ -677,7 +677,7 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         }, {
             # 2. Open Short position on Helix using borrowed USDT
-            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateDerivativeMarketOrder",
+            "typeUrl": "/injective.exchange.v1.MsgCreateDerivativeMarketOrder",
             "value": {
                 "sender": wallet_address,
                 "order": {
@@ -738,7 +738,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tx_sequence = [
             {
             # 1. Lend UST on Neptune
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1beta1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
@@ -750,7 +750,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             {
             # 2. Deposit nUSDT as collateral on Neptune
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
@@ -768,7 +768,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
             },
             {
             # 1. Borrow INJ from Neptune
-            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
             "value": {
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
@@ -786,7 +786,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         }, {
             # 2. Swap INJ to USDT on Helix
-            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateSpotMarketOrder",
+            "typeUrl": "/injective.exchange.v1beta1.MsgCreateSpotMarketOrder",
             "value": {
                 "sender": wallet_address,
                 "order": {
@@ -803,7 +803,7 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         }, {
             # 3. Open Long position using swapped USDT
-            "typeUrl": "/cosmwasm.wasm.v1.MsgCreateDerivativeMarketOrder",
+            "typeUrl": "/injective.exchange.v1beta1.MsgCreateDerivativeMarketOrder",
             "value": {
                 "sender": wallet_address,
                 "order": {
