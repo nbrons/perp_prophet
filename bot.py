@@ -876,7 +876,12 @@ async def lend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "sender": wallet_address,
                 "contract": NEPTUNE_MARKET_CONTRACT,
                 "msg": lend_msg,
-                "funds": str(amount_inj)+"inj"
+                "funds": [
+                    {
+                        "denom": "inj",
+                        "amount": str(amount_inj)
+                    }
+                ]
             }
         }]
         
