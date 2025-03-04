@@ -73,26 +73,53 @@
                 const offlineSigner = window.keplr.getOfflineSigner("injective-1");
                 const accounts = await offlineSigner.getAccounts();
                 
+                // Get account information (needed for transaction parameters)
+                const account = await fetch(
+                    `https://lcd.injective.network/cosmos/auth/v1beta1/accounts/${accounts[0].address}`
+                ).then(res => res.json());
+                
+                console.log('Account info:', account);
+                
+                const accountNumber = account.account?.account_number || "0";
+                let sequence = account.account?.sequence || "0";
+                
                 // Sign and broadcast each transaction in sequence
                 for (const txData of transactions) {
                     // Get account details
                     const key = await window.keplr.getKey("injective-1");
                     
+                    // Parse JSON message if it's a string
+                    if (typeof txData.value.msg === 'string') {
+                        try {
+                            txData.value.msg = JSON.parse(txData.value.msg);
+                        } catch (e) {
+                            console.error('Failed to parse message JSON:', e);
+                        }
+                    }
+                    
+                    // Format the message in Amino format
+                    const msg = {
+                        type: "wasm/MsgExecuteContract",
+                        value: {
+                            sender: accounts[0].address,
+                            contract: txData.value.contract,
+                            msg: txData.value.msg,
+                            funds: txData.value.funds
+                        }
+                    };
+                    
+                    console.log('Formatted message:', msg);
+                    
                     // Create proper sign doc format
                     const signDoc = {
                         chain_id: "injective-1",
-                        account_number: key.accountNumber,
-                        sequence: key.sequence,
+                        account_number: accountNumber,
+                        sequence: sequence,
                         fee: {
                             amount: [{ amount: "5000000000000000", denom: "inj" }],
                             gas: "200000"
                         },
-                        msgs: [
-                            {
-                                type: txData.typeUrl,
-                                value: txData.value
-                            }
-                        ],
+                        msgs: [msg],
                         memo: ""
                     };
 
@@ -116,9 +143,41 @@
                     // Send the transaction
                     const broadcastEndpoint = "https://sentry.exchange.grpc-web.injective.network/cosmos/tx/v1beta1/txs";
                     
+                    // Format the transaction for broadcasting according to Cosmos SDK specs
+                    const aminoSignedTx = {
+                        body: {
+                            messages: signDoc.msgs,
+                            memo: signDoc.memo,
+                            timeout_height: "0",
+                            extension_options: [],
+                            non_critical_extension_options: []
+                        },
+                        auth_info: {
+                            signer_infos: [
+                                {
+                                    public_key: {
+                                        type: '/cosmos.crypto.secp256k1.PubKey',
+                                        value: Buffer.from(signedResponse.signature.pub_key.value, 'base64').toString('base64')
+                                    },
+                                    mode_info: {
+                                        single: {
+                                            mode: 'SIGN_MODE_LEGACY_AMINO_JSON'
+                                        }
+                                    },
+                                    sequence: signDoc.sequence
+                                }
+                            ],
+                            fee: {
+                                amount: signDoc.fee.amount,
+                                gas_limit: signDoc.fee.gas
+                            }
+                        },
+                        signatures: [Buffer.from(signedResponse.signature.signature, 'base64').toString('base64')]
+                    };
+                    
                     // Format the transaction for broadcasting
                     const broadcastBody = {
-                        tx_bytes: signedResponse.signed,
+                        tx_bytes: Buffer.from(JSON.stringify(aminoSignedTx)).toString('base64'),
                         mode: "BROADCAST_MODE_BLOCK"
                     };
                     
@@ -134,11 +193,26 @@
                     
                     console.log('Transaction result:', txResult);
                     
+                    // More detailed logging of transaction result
+                    if (txResult.tx_response) {
+                        console.log('Transaction hash:', txResult.tx_response.txhash);
+                        console.log('Transaction status:', txResult.tx_response.code === 0 ? 'Success' : 'Failed');
+                        console.log('Gas used:', txResult.tx_response.gas_used);
+                        console.log('Gas wanted:', txResult.tx_response.gas_wanted);
+                        console.log('Height:', txResult.tx_response.height);
+                        if (txResult.tx_response.logs) {
+                            console.log('Transaction logs:', JSON.stringify(txResult.tx_response.logs, null, 2));
+                        }
+                        if (txResult.tx_response.raw_log) {
+                            console.log('Raw log:', txResult.tx_response.raw_log);
+                        }
+                    }
+                    
                     // Wait for transaction to be confirmed
                     await new Promise(resolve => setTimeout(resolve, 2000));
                     
                     // Increment sequence for next transaction
-                    key.sequence = (parseInt(key.sequence) + 1).toString();
+                    sequence = (parseInt(sequence) + 1).toString();
                 }
                 
                 // Show success message

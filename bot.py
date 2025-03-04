@@ -55,7 +55,7 @@ NEPTUNE_BORROW = os.getenv('NEPTUNE_BORROW_URL')
 NEPTUNE_LEND = os.getenv('NEPTUNE_LEND_URL')
 
 # Constants for contract addresses
-NEPTUNE_LENDING_CONTRACT="inj1xemdknj74p3qsgxs47n9c7e4u2wnxc0cpv3dyz"
+NEPTUNE_MARKET_CONTRACT="inj1nc7gjkf2mhp34a6gquhurg8qahnw5kxs5u3s4u"
 HELIX_MARKET_CONTRACT="inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
 INJ_PERP_MARKET_ID="0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963"
 
@@ -208,7 +208,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Hello! How can I help you?", reply_markup=reply_markup)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text("Hello! How can I help you?", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("Hello! How can I help you?", reply_markup=reply_markup)
 
 
 async def get_wallet_balances(wallet_address: str) -> dict:
@@ -426,6 +430,7 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add buttons for position actions including iAgent analysis
         keyboard = [
             [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
+            [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")],
             [InlineKeyboardButton("Analyze With iAgent", callback_data="analyze_positions")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -502,6 +507,21 @@ async def show_opportunities(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"• Collateral Rate: {collateral_interest_rate_usdt * 100:.2f}%\n\n"
             f"Lending Opportunity:\n"
             f"• Lending APY: {lending_apy:.2f}%\n"
+            f"\n📊 *Recommendation*:\n"
+        )
+        
+        # Determine the best strategy based on APY
+        best_strategy = ""
+        if apy_a >= apy_b and apy_a >= lending_apy:
+            best_strategy = f"Strategy A (Delta Neutral INJ Short) with {apy_a:.2f}% APY"
+        elif apy_b >= apy_a and apy_b >= lending_apy:
+            best_strategy = f"Strategy B (Delta Neutral INJ Long) with {apy_b:.2f}% APY"
+        else:
+            best_strategy = f"Simple INJ Lending with {lending_apy:.2f}% APY"
+        
+        message += (
+            f"Based on current market conditions, the best opportunity is *{best_strategy}*.\n\n"
+            f"Always consider your risk tolerance and portfolio diversification when selecting a strategy."
         )
 
         # Create buttons for each strategy
@@ -603,13 +623,46 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices = await client.fetch_derivative_mid_price_and_tob(
         market_id=INJ_PERP_MARKET_ID,
         )
+
+        amount_inj = amount * float(prices['midPrice'])
         # Create transaction sequence for Strategy A
-        tx_sequence = [{
+        tx_sequence = [
+            {
+            # 1. Lend INJ on Neptune
+            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "value": {
+                "sender": wallet_address,
+                "contract": NEPTUNE_MARKET_CONTRACT,
+                "msg": {
+                    "lend": {}
+                },
+                "funds": str(int(amount_inj))+"inj"
+            }
+            },
+            {
+            # 2. Deposit INJ as collateral on Neptune
+            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "value": {
+                "sender": wallet_address,
+                "contract": NEPTUNE_MARKET_CONTRACT,
+                "msg": {
+                    "deposit_collateral": {
+                        "amount": str(int(amount_inj))+"inj",
+                        "asset_info": {
+                            "native_token": {
+                                "denom": "inj"
+                            }
+                        }
+                    }
+                }
+            }
+            },
+            {
             # 1. Borrow USDT from Neptune
             "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
             "value": {
                 "sender": wallet_address,
-                "contract": NEPTUNE_LENDING_CONTRACT,
+                "contract": NEPTUNE_MARKET_CONTRACT,
                 "msg": {
                     "borrow": {
                         "account_index": 0,
@@ -644,11 +697,13 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
         strategy_explanation = (
             "Strategy A - Delta Neutral INJ Short\n\n"
             "This will execute the following transactions:\n"
-            "1. Borrow USDT from Neptune lending\n"
-            "2. Use borrowed USDT as collateral on Helix\n"
-            "3. Open an INJ short position on Helix\n\n"
+            "1. Lend INJ on Neptune\n"
+            "2. Deposit nINJ as collateral on Neptune\n"
+            "3. Borrow USDT from Neptune lending\n"
+            "4. Use borrowed USDT as collateral on Helix\n"
+            "5. Open an INJ short position on Helix\n\n"
             f"Borrow Amount: {amount} USDT\n"
-            f"Position Size: {amount * 5} USDT worth of INJ\n"
+            f"Position Size: {amount * 3} USDT worth of INJ\n"
             "Please review and confirm:"
         )
         
@@ -680,12 +735,43 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # Create transaction sequence for Strategy B
-        tx_sequence = [{
+        tx_sequence = [
+            {
+            # 1. Lend UST on Neptune
+            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "value": {
+                "sender": wallet_address,
+                "contract": NEPTUNE_MARKET_CONTRACT,
+                "msg": {
+                    "lend": {}
+                },
+                "funds": str(int(amount * 1e6))+"peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"
+            }
+            },
+            {
+            # 2. Deposit nUSDT as collateral on Neptune
+            "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
+            "value": {
+                "sender": wallet_address,
+                "contract": NEPTUNE_MARKET_CONTRACT,
+                "msg": {
+                    "deposit_collateral": { 
+                        "amount": str(int(amount * 1e6))+"peggy0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                        "asset_info": {
+                            "native_token": {
+                                "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"
+                            }
+                        }
+                    }
+                }
+            }
+            },
+            {
             # 1. Borrow INJ from Neptune
             "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
             "value": {
                 "sender": wallet_address,
-                "contract": NEPTUNE_LENDING_CONTRACT,
+                "contract": NEPTUNE_MARKET_CONTRACT,
                 "msg": {
                     "borrow": {
                         "account_index": 0,
@@ -737,11 +823,13 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         strategy_explanation = (
             "Strategy B - Delta Neutral INJ Long\n\n"
             "This will execute the following transactions:\n"
-            "1. Borrow INJ from Neptune\n"
-            "2. Swap borrowed INJ to USDT\n"
-            "3. Use USDT as collateral to open INJ long on Helix\n\n"
+            "1. Lend USDT on Neptune\n"
+            "2. Deposit nUSDT as collateral on Neptune\n"
+            "3. Borrow INJ from Neptune\n"
+            "4. Swap borrowed INJ to USDT\n"
+            "5. Use USDT as collateral to open INJ long on Helix\n\n"
             f"Borrow Amount: {amount} INJ\n"
-            f"Expected Position Size: {amount * 5} USDT worth of INJ\n"
+            f"Expected Position Size: {amount * 3} USDT worth of INJ\n"
             "Please review and confirm:"
         )
         
@@ -757,8 +845,12 @@ async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {str(e)}")
 
 async def lend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle lending on Neptune"""
     try:
+        # Get user info
         user_id = update.effective_user.id
+        
+        # Check if wallet is connected
         if not is_wallet_connected(user_id):
             await update.message.reply_text("Please connect your wallet first using /start")
             return
@@ -767,29 +859,29 @@ async def lend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args or len(context.args) == 0:
             await update.message.reply_text("Please specify an amount to lend. Usage: /lending <amount>")
             return
-        
+            
         amount = float(context.args[0])
         
         logger.info(f"Creating Lending transaction for wallet {wallet_address} with amount {amount}")
         
+        amount_inj = int(amount * 1e18)  # Convert to atomic units with proper int conversion
+        
+        # Create proper JSON-encoded message (Not base64)
+        lend_msg = json.dumps({"lend": {}})
+        
+        # Create a properly structured transaction following Injective SDK pattern
         transactions = [{
             "typeUrl": "/cosmwasm.wasm.v1.MsgExecuteContract",
             "value": {
                 "sender": wallet_address,
-                "contract": NEPTUNE_LENDING_CONTRACT,
-                "msg": {
-                    "lend": {
-                        "account_index": 0,
-                        "amount": str(int(amount * 1e18)),  # INJ has 18 decimals
-                        "asset_info": {
-                            "native_token": {
-                                "denom": "inj"
-                            }
-                        },
-                    }
-                }
+                "contract": NEPTUNE_MARKET_CONTRACT,
+                "msg": lend_msg,
+                "funds": str(amount_inj)+"inj"
             }
         }]
+        
+        # Print transaction for debugging
+        print(f"Lend transaction: {json.dumps(transactions, indent=2)}")
         
         data = {
             'transactions': transactions,
@@ -807,10 +899,11 @@ async def lend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            f"Please sign and execute Lending transaction in Keplr\nAmount: {amount} USDT",
+            f"Please sign and execute Lending transaction in Keplr\nAmount: {amount} INJ",
             reply_markup=reply_markup
         )
     except Exception as e:
+        logger.error(f"Error in lend command: {str(e)}")
         await update.message.reply_text(f"Error: {str(e)}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -856,7 +949,7 @@ async def analyze_with_iagent(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Send analysis to user
         keyboard = [
             [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
-            [InlineKeyboardButton("Back to Menu", callback_data="start")]
+            [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
