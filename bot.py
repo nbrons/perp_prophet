@@ -21,13 +21,19 @@ import logging
 from urllib.parse import quote
 import os
 from dotenv import load_dotenv
-from pyinjective.core.network import Network  # Add back for positions
-from pyinjective.async_client import AsyncClient  # Add back for positions
+from pyinjective.core.network import Network
+from pyinjective.async_client import AsyncClient
 from eth_utils import remove_0x_prefix
 from bech32 import bech32_decode, convertbits
 import base64
 import requests
 from agent_client import AgentClient
+from decimal import Decimal
+from time import sleep
+from pyinjective.constant import GAS_FEE_BUFFER_AMOUNT, GAS_PRICE
+from pyinjective.transaction import Transaction
+from pyinjective.wallet import PrivateKey
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -55,9 +61,9 @@ NEPTUNE_BORROW = os.getenv('NEPTUNE_BORROW_URL')
 NEPTUNE_LEND = os.getenv('NEPTUNE_LEND_URL')
 
 # Constants for contract addresses
-NEPTUNE_MARKET_CONTRACT="inj1nc7gjkf2mhp34a6gquhurg8qahnw5kxs5u3s4u"
-HELIX_MARKET_CONTRACT="inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
-INJ_PERP_MARKET_ID="0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963"
+NEPTUNE_MARKET_CONTRACT = "inj1nc7gjkf2mhp34a6gquhurg8qahnw5kxs5u3s4u"
+HELIX_MARKET_CONTRACT = "inj1q8qk6c7n44gf4e6jlhpvpwujdz0qm5hc4vuwhs"
+INJ_PERP_MARKET_ID = "0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963"
 
 # Example market IDs - we'll fetch all positions dynamically
 # INJ/USDT PERP Market ID
@@ -72,6 +78,13 @@ CLOSE_COMMANDS = {
     'b': '/close_b',
     'lend': '/close_lending'
 }
+
+# Add new constants for Neptune and Helix integration
+NEPTUNE_ORACLE_ADDRESS = "inj1u6cclz0qh5tep9m2qayry9k97dm46pnlqf8nre"
+INJ_MARKET_ID = "0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963"
+FEE_RECIPIENT = "inj1xwfmk0rxf5nw2exvc42u2utgntuypx3k3gdl90"
+MIN_NOTIONAL_SMALLEST_UNITS = 1000000  # 1,000,000 in USDT's smallest units
+GAS_BUFFER = 40000  # Buffer for gas fee computation
 
 def get_subaccount_id(address, subaccount_index=0):
     """Convert an Injective address to a subaccount ID"""
@@ -487,20 +500,26 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         positions_msg = "Your Current Positions:\n\n"
         
         # Add Helix positions
+        has_short_position = False
         if helix_positions:
             positions_msg += "\n📊 *Helix Positions:*\n"
             for pos in helix_positions:
                 positions_msg += f"- {pos['market_id']}: {pos['type']} {pos['quantity']:.4f} @ {pos['entry_price']:.2f}\n"
                 positions_msg += f"  Margin: {pos['margin']:.2f} USDT | Funding: {pos['funding']:.6f}\n"
+                if pos['type'] == "SHORT":
+                    has_short_position = True
         else:
             positions_msg += "\n🔄 No active Helix positions\n\n"
         
         # Add Neptune positions
+        has_inj_lending = False
         if neptune_positions:
             positions_msg += "\n💰 Neptune Lending Positions:\n"
             for pos in neptune_positions:
                 positions_msg += f"- {pos['type']} {pos['amount']} {pos['token']}\n"
                 positions_msg += f"  Rate: {pos['rate']}%\n"
+                if pos['token'] == 'INJ':
+                    has_inj_lending = True
         else:
             positions_msg += "\nNo active Neptune positions\n\n"
         
@@ -513,11 +532,18 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             positions_msg += "\nNo balances found"
         
         # Add buttons for position actions including iAgent analysis
-        keyboard = [
+        keyboard = []
+        
+        # Add Close Strategy A button if we detect the relevant positions
+        if has_short_position and has_inj_lending:
+            keyboard.append([InlineKeyboardButton("Close Strategy A", callback_data="close_a")])
+        
+        keyboard.extend([
             [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
             [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")],
             [InlineKeyboardButton("Analyze With iAgent", callback_data="analyze_positions")]
-        ]
+        ])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         # Add a timestamp to ensure content is different on each refresh
@@ -537,7 +563,7 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")
             ]])
-        )    
+        )
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks from inline keyboards."""
@@ -559,19 +585,15 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await execute_a(update, context)
     elif query.data == "execute_b":
         await execute_b(update, context)
+    elif query.data == "close_a":
+        await close_strategy_a(update, context)
     elif query.data.startswith("invest_a_"):
-        # Extract the amount from the callback_data
         amount = query.data.split("_")[2]
-        # Set context.args to be used by strategy_a
         context.args = [amount]
-        # Call the strategy_a function
         await strategy_a(update, context)
     elif query.data.startswith("invest_b_"):
-        # Extract the amount from the callback_data
         amount = query.data.split("_")[2]
-        # Set context.args to be used by strategy_b
         context.args = [amount]
-        # Call the strategy_b function
         await strategy_b(update, context)
     elif query.data == "show_math_a":
         await show_strategy_a_math(update, context)
@@ -587,27 +609,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"Unsupported button: {query.data}")
 
 async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for Strategy A."""
+    """Handler for Strategy A using direct private key signing."""
     try:
         # Check if this is a callback query or a direct command
         is_callback = hasattr(update, 'callback_query') and update.callback_query is not None
-        
-        # Get user ID from appropriate source
-        user_id = update.effective_user.id
-        
-        # Get the message object from appropriate source
         message_obj = update.callback_query.message if is_callback else update.message
-        
-        # Check if wallet is connected
-        if not is_wallet_connected(user_id):
-            reply_text = "Please connect your wallet first using /start"
-            if is_callback:
-                await update.callback_query.edit_message_text(reply_text)
-            else:
-                await message_obj.reply_text(reply_text)
-            return
-        
-        wallet_address = get_wallet(user_id)
         
         if not context.args or len(context.args) == 0:
             reply_text = "Please specify an amount to invest. Usage: /invest_a <amount>"
@@ -618,107 +624,154 @@ async def strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         amount = float(context.args[0])
+        INJ_AMOUNT = int(amount * 1e18)  # Convert to INJ's smallest unit (18 decimals)
         
-        logger.info(f"Creating Strategy A transactions for wallet {wallet_address} with amount {amount}")
-
-        prices = await client.fetch_derivative_mid_price_and_tob(
-        market_id=INJ_PERP_MARKET_ID,
+        # Initialize progress message
+        progress_msg = await message_obj.reply_text(
+            "🔄 Executing Strategy A...\n"
+            "1. Setting up connection..."
         )
-
-        amount_inj = amount * float(prices['midPrice'])
-        # Create transaction sequence for Strategy A
-        tx_sequence = [
-            {
-            # 1. Lend INJ on Neptune
-            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
-            "value": {
-                "sender": wallet_address,
-                "contract": NEPTUNE_MARKET_CONTRACT,
-                "msg": {
-                    "lend": {}
-                },
-                "funds": str(int(amount_inj))+"inj"
-            }
-            },
-            {
-            # 2. Deposit INJ as collateral on Neptune
-            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
-            "value": {
-                "sender": wallet_address,
-                "contract": NEPTUNE_MARKET_CONTRACT,
-                "msg": {
-                    "deposit_collateral": {
-                        "amount": str(int(amount_inj))+"inj",
-                        "asset_info": {
-                            "native_token": {
-                                "denom": "inj"
-                            }
-                        }
+        
+        # Setup client and account
+        client, composer, network, priv_key, pub_key, address = await setup_client()
+        
+        await progress_msg.edit_text(
+            progress_msg.text + "\n✅ Connection established\n"
+            "2. Depositing INJ collateral..."
+        )
+        
+        # 1. Deposit INJ collateral
+        funds = [composer.coin(amount=INJ_AMOUNT, denom="inj")]
+        deposit_msg = '{"deposit_collateral": {"account_index": 0}}'
+        
+        deposit_result = await execute_contract_tx(
+            client, composer, network, priv_key, pub_key, address,
+            NEPTUNE_MARKET_CONTRACT, deposit_msg, funds
+        )
+        
+        if not deposit_result:
+            await progress_msg.edit_text(
+                progress_msg.text + "\n❌ Deposit failed. Operation aborted."
+            )
+            return
+            
+        await progress_msg.edit_text(
+            progress_msg.text + "\n✅ INJ deposited\n"
+            "3. Calculating borrow amount..."
+        )
+        
+        # 2. Query collateral and prices
+        user_query = f'{{"get_user_accounts": {{"addr": "{address.to_acc_bech32()}"}}}}'
+        decoded_data = await query_contract_state(client, NEPTUNE_MARKET_CONTRACT, user_query)
+        
+        price_query = '{"get_prices": {"assets": [{"native_token": {"denom": "inj"}}, {"native_token": {"denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"}}]}}'
+        prices_data = await query_contract_state(client, NEPTUNE_ORACLE_ADDRESS, price_query)
+        
+        # Extract data from responses
+        inj_collateral = await extract_inj_collateral(decoded_data)
+        inj_price, usdt_price = await extract_prices(prices_data)
+        
+        # Calculate values for borrowing
+        inj_collateral_value = inj_collateral * inj_price
+        usdt_to_borrow = inj_collateral_value * 0.43  # Borrow 43% of collateral value
+        usdt_to_borrow_amount = int(usdt_to_borrow * 10**6)  # Convert to USDT's smallest unit (6 decimals)
+        
+        await progress_msg.edit_text(
+            progress_msg.text + f"\n✅ Calculations complete\n"
+            f"   • INJ Collateral: {inj_collateral:.6f} INJ\n"
+            f"   • INJ Price: ${inj_price:.2f}\n"
+            f"   • USDT to Borrow: ${usdt_to_borrow:.2f}\n"
+            "4. Borrowing USDT..."
+        )
+        
+        # 3. Borrow USDT
+        borrow_msg = {
+            "borrow": {
+                "account_index": 0,
+                "amount": str(usdt_to_borrow_amount),
+                "asset_info": {
+                    "native_token": {
+                        "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"
                     }
                 }
             }
-            },
-            {
-            # 1. Borrow USDT from Neptune
-            "typeUrl": "/injective.wasmx.v1.MsgExecuteContractCompat",
-            "value": {
-                "sender": wallet_address,
-                "contract": NEPTUNE_MARKET_CONTRACT,
-                "msg": {
-                    "borrow": {
-                        "account_index": 0,
-                        "amount": str(int(amount * 1e6)),
-                        "asset_info": {
-                            "native_token": {
-                                "denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"
-                            }
-                        }
-                    }
-                }
-            }
-        }, {
-            # 2. Open Short position on Helix using borrowed USDT
-            "typeUrl": "/injective.exchange.v1.MsgCreateDerivativeMarketOrder",
-            "value": {
-                "sender": wallet_address,
-                "order": {
-                    "market_id": INJ_PERP_MARKET_ID,
-                    "order_info": {
-                        "subaccount_id": get_subaccount_id(wallet_address),
-                        "fee_recipient": wallet_address, # TODO: change to personal address to collect fees
-                        "price": prices['bestSellPrice'],
-                        "quantity": str(int(amount * 1e6)) * 3, # 3x leverage
-                    },
-                    "order_type": "SELL",
-                    "trigger_price": "0.000000000000000000"
-                },
-            }
-        }]
+        }
         
-        strategy_explanation = (
-            "Strategy A - Delta Neutral INJ Short\n\n"
-            "This will execute the following transactions:\n"
-            "1. Lend INJ on Neptune\n"
-            "2. Deposit nINJ as collateral on Neptune\n"
-            "3. Borrow USDT from Neptune lending\n"
-            "4. Use borrowed USDT as collateral on Helix\n"
-            "5. Open an INJ short position on Helix\n\n"
-            f"Borrow Amount: {amount} USDT\n"
-            f"Position Size: {amount * 3} USDT worth of INJ\n"
-            "Please review and confirm:"
+        borrow_result = await execute_contract_tx(
+            client, composer, network, priv_key, pub_key, address,
+            NEPTUNE_MARKET_CONTRACT, borrow_msg
         )
         
-        tx_url = create_transaction_url(tx_sequence, user_id)
+        if not borrow_result:
+            await progress_msg.edit_text(
+                progress_msg.text + "\n❌ USDT borrow failed. Operation aborted."
+            )
+            return
+            
+        await progress_msg.edit_text(
+            progress_msg.text + "\n✅ USDT borrowed\n"
+            "5. Opening short position..."
+        )
+        
+        # 4. Create derivative market order
+        subaccount_id = address.get_subaccount_id(index=0)
+        
+        # Calculate order parameters
+        inj_quantity = inj_collateral
+        notional_value = inj_quantity * inj_price
+        min_notional = MIN_NOTIONAL_SMALLEST_UNITS / 10**6
+        
+        # Adjust quantity if needed to meet minimum notional
+        if notional_value < min_notional:
+            inj_quantity = (MIN_NOTIONAL_SMALLEST_UNITS * 1.01) / 10**6 / inj_price
+        
+        # Convert to Decimal objects
+        inj_quantity_decimal = Decimal(str(round(inj_quantity, 6)))
+        inj_price_decimal = Decimal(str(round(inj_price, 6)))
+        
+        # Calculate leverage
+        position_value = inj_collateral * inj_price
+        margin_value = usdt_to_borrow
+        dynamic_leverage = Decimal(str((position_value / margin_value)))
+        
+        # Create and execute the derivative market order
+        order_result = await create_derivative_market_order(
+            client, composer, network, priv_key, pub_key, address,
+            INJ_MARKET_ID, subaccount_id, inj_price_decimal, inj_quantity_decimal, dynamic_leverage
+        )
+        
+        if not order_result:
+            await progress_msg.edit_text(
+                progress_msg.text + "\n❌ Short position creation failed. Operation aborted."
+            )
+            return
+        
+        # Final success message
+        final_message = (
+            "✅ Strategy A executed successfully!\n\n"
+            f"Position Details:\n"
+            f"• INJ Collateral: {inj_collateral:.6f} INJ (${inj_collateral_value:.2f})\n"
+            f"• USDT Borrowed: ${usdt_to_borrow:.2f}\n"
+            f"• Short Position: {inj_quantity_decimal} INJ @ ${inj_price_decimal}\n"
+            f"• Leverage: {dynamic_leverage:.2f}x\n\n"
+            f"Use /view_positions to monitor your position."
+        )
+        
         keyboard = [
-            [InlineKeyboardButton("Execute in Keplr", url=tx_url)],
-            [InlineKeyboardButton("Cancel", callback_data="cancel_strategy")],
-            [InlineKeyboardButton("Show Math", callback_data="show_math_a")],
+            [InlineKeyboardButton("View Positions", callback_data="view_positions")],
+            [InlineKeyboardButton("Back to Menu", callback_data="start")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await message_obj.reply_text(strategy_explanation, reply_markup=reply_markup)
+        await progress_msg.edit_text(final_message, reply_markup=reply_markup)
+        
     except Exception as e:
-        await message_obj.reply_text(f"Error: {str(e)}")
+        logger.error(f"Error in strategy_a: {str(e)}")
+        error_message = f"❌ Error executing Strategy A: {str(e)}"
+        if 'progress_msg' in locals():
+            await progress_msg.edit_text(error_message)
+        else:
+            await message_obj.reply_text(error_message)
 
 async def strategy_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1180,6 +1233,363 @@ async def execute_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+async def setup_client():
+    """Initialize client and account"""
+    # Load private key from .env file
+    configured_private_key = os.getenv("INJECTIVE_PRIVATE_KEY")
+    
+    # Initialize network and client
+    network = Network.mainnet()
+    client = AsyncClient(network)
+    composer = await client.composer()
+    await client.sync_timeout_height()
+    
+    # Load account
+    priv_key = PrivateKey.from_hex(configured_private_key)
+    pub_key = priv_key.to_public_key()
+    address = pub_key.to_address()
+    await client.fetch_account(address.to_acc_bech32())
+    
+    return client, composer, network, priv_key, pub_key, address
+
+async def execute_contract_tx(client, composer, network, priv_key, pub_key, address, contract, msg_data, funds=None):
+    """Execute a contract transaction with simulation and broadcasting"""
+    if funds is None:
+        funds = []
+    
+    # Always refresh account information to get the latest sequence number
+    await client.fetch_account(address.to_acc_bech32())
+        
+    # Prepare transaction message
+    msg = composer.MsgExecuteContract(
+        sender=address.to_acc_bech32(),
+        contract=contract,
+        msg=msg_data if isinstance(msg_data, str) else json.dumps(msg_data),
+        funds=funds,
+    )
+    
+    # Build and simulate transaction
+    tx = (
+        Transaction()
+        .with_messages(msg)
+        .with_sequence(client.get_sequence())
+        .with_account_num(client.get_number())
+        .with_chain_id(network.chain_id)
+    )
+    sim_sign_doc = tx.get_sign_doc(pub_key)
+    sim_sig = priv_key.sign(sim_sign_doc.SerializeToString())
+    sim_tx_raw_bytes = tx.get_tx_data(sim_sig, pub_key)
+    
+    # Simulate transaction
+    try:
+        sim_res = await client.simulate(sim_tx_raw_bytes)
+    except RpcError as ex:
+        print(f"Simulation error: {ex}")
+        return None
+    
+    # Build transaction with gas limit
+    gas_price = GAS_PRICE
+    gas_limit = int(sim_res["gasInfo"]["gasUsed"]) + GAS_BUFFER
+    gas_fee = "{:.18f}".format((gas_price * gas_limit) / pow(10, 18)).rstrip("0")
+    fee = [
+        composer.coin(
+            amount=gas_price * gas_limit,
+            denom=network.fee_denom,
+        )
+    ]
+    
+    # Refresh account information again before broadcasting
+    await client.fetch_account(address.to_acc_bech32())
+    
+    tx = (
+        Transaction()
+        .with_messages(msg)
+        .with_sequence(client.get_sequence())
+        .with_account_num(client.get_number())
+        .with_chain_id(network.chain_id)
+        .with_gas(gas_limit)
+        .with_fee(fee)
+        .with_memo("")
+        .with_timeout_height(client.timeout_height)
+    )
+    sign_doc = tx.get_sign_doc(pub_key)
+    sig = priv_key.sign(sign_doc.SerializeToString())
+    tx_raw_bytes = tx.get_tx_data(sig, pub_key)
+    
+    # Broadcast transaction
+    res = await client.broadcast_tx_sync_mode(tx_raw_bytes)
+    logger.info(f"Transaction result: {res}")
+    logger.info(f"Gas used: {gas_limit}, Gas fee: {gas_fee} INJ")
+    
+    # Wait for transaction to be included in a block
+    sleep(3)
+    
+    return res
+
+async def query_contract_state(client, contract_address, query_data):
+    """Query a smart contract's state"""
+    contract_state = await client.fetch_smart_contract_state(
+        address=contract_address, 
+        query_data=query_data
+    )
+    return json.loads(base64.b64decode(contract_state["data"]))
+
+async def create_derivative_market_order(client, composer, network, priv_key, pub_key, address, 
+                                      market_id, subaccount_id, price, quantity, leverage, order_type="SELL"):
+    """Create a derivative market order"""
+    # Always refresh account information to get the latest sequence number
+    await client.fetch_account(address.to_acc_bech32())
+    await client.sync_timeout_height()
+    
+    # Prepare order message
+    msg = composer.msg_create_derivative_market_order(
+        sender=address.to_acc_bech32(),
+        market_id=market_id,
+        subaccount_id=subaccount_id,
+        fee_recipient=FEE_RECIPIENT,
+        price=price,
+        quantity=quantity,
+        margin=composer.calculate_margin(
+            quantity=quantity, 
+            price=price, 
+            leverage=leverage, 
+            is_reduce_only=False
+        ),
+        order_type=order_type,
+        cid=str(uuid.uuid4()),
+    )
+    
+    # Build and simulate transaction
+    tx = (
+        Transaction()
+        .with_messages(msg)
+        .with_sequence(client.get_sequence())
+        .with_account_num(client.get_number())
+        .with_chain_id(network.chain_id)
+    )
+    sim_sign_doc = tx.get_sign_doc(pub_key)
+    sim_sig = priv_key.sign(sim_sign_doc.SerializeToString())
+    sim_tx_raw_bytes = tx.get_tx_data(sim_sig, pub_key)
+    
+    # Simulate transaction
+    try:
+        sim_res = await client.simulate(sim_tx_raw_bytes)
+        logger.info(f"Simulation successful. Gas used: {sim_res['gasInfo']['gasUsed']}")
+    except RpcError as ex:
+        print(f"Simulation failed: {ex}")
+        return None
+    
+    # Build transaction with gas limit
+    gas_price = GAS_PRICE
+    gas_limit = int(sim_res["gasInfo"]["gasUsed"]) + GAS_BUFFER
+    gas_fee = "{:.18f}".format((gas_price * gas_limit) / pow(10, 18)).rstrip("0")
+    
+    # Refresh account information again before broadcasting
+    await client.fetch_account(address.to_acc_bech32())
+    await client.sync_timeout_height()
+    
+    # Create transaction with latest sequence
+    fee = [composer.coin(amount=gas_price * gas_limit, denom=network.fee_denom)]
+    tx = (
+        Transaction()
+        .with_messages(msg)
+        .with_sequence(client.get_sequence())
+        .with_account_num(client.get_number())
+        .with_chain_id(network.chain_id)
+        .with_gas(gas_limit)
+        .with_fee(fee)
+        .with_memo("")
+        .with_timeout_height(client.timeout_height)
+    )
+    sign_doc = tx.get_sign_doc(pub_key)
+    sig = priv_key.sign(sign_doc.SerializeToString())
+    tx_raw_bytes = tx.get_tx_data(sig, pub_key)
+    
+    # Execute transaction
+    logger.info(f"Ready to execute transaction with gas fee: {gas_fee} INJ")
+    res = await client.broadcast_tx_sync_mode(tx_raw_bytes)
+    logger.info(f"Transaction result: {res}")
+    
+    # Wait for transaction to be included in a block
+    sleep(3)
+    
+    return res
+
+async def extract_inj_collateral(decoded_data):
+    """Extract INJ collateral amount from contract query response"""
+    inj_collateral = 0
+    inj_collateral_data = decoded_data[0][1]
+    
+    # Check if there are collateral pool accounts
+    if 'collateral_pool_accounts' in inj_collateral_data:
+        for pool in inj_collateral_data['collateral_pool_accounts']:
+            # Find the INJ token entry
+            for entry in pool:
+                if isinstance(entry, dict) and 'native_token' in entry and entry['native_token']['denom'] == 'inj':
+                    # The next entry should contain the principal
+                    inj_index = pool.index(entry)
+                    if inj_index + 1 < len(pool) and 'principal' in pool[inj_index + 1]:
+                        inj_collateral += float(pool[inj_index + 1]['principal']) / 10**18  # Convert from 18 decimals
+    
+    return inj_collateral
+
+async def extract_prices(prices_data):
+    """Extract asset prices from oracle query response"""
+    inj_price = 0
+    usdt_price = 0
+    
+    for asset_price_pair in prices_data:
+        asset = asset_price_pair[0]
+        price_info = asset_price_pair[1]
+        
+        if 'native_token' in asset and asset['native_token']['denom'] == 'inj':
+            inj_price = float(price_info['price'])
+        elif 'native_token' in asset and 'peggy' in asset['native_token']['denom']:
+            usdt_price = float(price_info['price'])
+    
+    return inj_price, usdt_price
+
+async def close_strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Close Strategy A positions using direct private key signing."""
+    try:
+        # Check if this is a callback query or a direct command
+        is_callback = hasattr(update, 'callback_query') and update.callback_query is not None
+        message_obj = update.callback_query.message if is_callback else update.message
+        
+        # Initialize progress message
+        progress_msg = await message_obj.reply_text(
+            "🔄 Closing Strategy A positions...\n"
+            "1. Setting up connection..."
+        )
+        
+        # Setup client and account
+        client, composer, network, priv_key, pub_key, address = await setup_client()
+        subaccount_id = address.get_subaccount_id(index=0)
+        market_id = INJ_MARKET_ID
+        
+        await progress_msg.edit_text(
+            progress_msg.text + "\n✅ Connection established\n"
+            "2. Closing Helix position..."
+        )
+        
+        # 1. Close Helix position
+        helix_result = await close_helix_position(
+            client, composer, address, subaccount_id, market_id, 
+            network, priv_key, pub_key
+        )
+        
+        if not helix_result:
+            await progress_msg.edit_text(
+                progress_msg.text + "\n❌ Failed to close Helix position. Operation aborted."
+            )
+            return
+            
+        await progress_msg.edit_text(
+            progress_msg.text + "\n✅ Helix position closed\n"
+            "3. Checking Neptune positions..."
+        )
+        
+        # 2. Query user account state
+        user_query_data = json.dumps({"get_user_accounts": {"addr": address.to_acc_bech32()}})
+        market_state = await query_market_state(client, NEPTUNE_MARKET_CONTRACT, user_query_data)
+        
+        # 3. Handle USDT debt repayment
+        if "debt" in market_state and "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7" in market_state["debt"]:
+            await progress_msg.edit_text(
+                progress_msg.text + "\n✅ Found USDT debt\n"
+                "4. Repaying USDT debt..."
+            )
+            
+            user_usdt_debt = market_state["debt"]["peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+            user_shares = int(user_usdt_debt["shares"])
+            user_actual_debt = int(user_usdt_debt["principal"])
+            
+            if user_shares > 0 and user_actual_debt > 0:
+                msg = '{"return": {"account_index": 0}}'
+                repay_result = await execute_contract(
+                    msg, user_usdt_debt, client, composer, address, 
+                    network, priv_key, pub_key, user_actual_debt
+                )
+                
+                if not repay_result:
+                    await progress_msg.edit_text(
+                        progress_msg.text + "\n❌ Failed to repay USDT debt. Operation aborted."
+                    )
+                    return
+                
+                # Verify debt repayment
+                await asyncio.sleep(3)
+                updated_market_state = await query_market_state(client, NEPTUNE_MARKET_CONTRACT, user_query_data)
+                
+                if ("debt" in updated_market_state and 
+                    "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7" in updated_market_state["debt"]):
+                    updated_debt = updated_market_state["debt"]["peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+                    updated_shares = int(updated_debt.get("shares", "0"))
+                    updated_principal = int(updated_debt.get("principal", "0"))
+                    
+                    if updated_shares > 0 or updated_principal > 0:
+                        if updated_principal <= 10:
+                            await progress_msg.edit_text(
+                                progress_msg.text + f"\n⚠️ Tiny debt remaining: {updated_principal} USDT\n"
+                                "5. Attempting final repayment..."
+                            )
+                            
+                            msg = '{"return": {"account_index": 0}}'
+                            await execute_contract(
+                                msg, updated_debt, client, composer, address, 
+                                network, priv_key, pub_key, updated_principal
+                            )
+                            await asyncio.sleep(3)
+                
+                await progress_msg.edit_text(
+                    progress_msg.text + "\n✅ USDT debt repaid\n"
+                    "6. Withdrawing collateral..."
+                )
+                market_state = updated_market_state
+        
+        # 4. Withdraw INJ collateral
+        if "collateral" in market_state and "inj" in market_state["collateral"]:
+            inj_collateral = market_state["collateral"]["inj"]
+            inj_shares = int(inj_collateral["principal"])
+            
+            if inj_shares > 0:
+                withdraw_result = await withdraw_collateral(
+                    client, composer, address, network, priv_key, pub_key, 
+                    "inj", inj_shares
+                )
+                
+                if not withdraw_result or withdraw_result.get("txResponse", {}).get("code", -1) != 0:
+                    await progress_msg.edit_text(
+                        progress_msg.text + "\n❌ Failed to withdraw INJ collateral."
+                    )
+                    return
+        
+        # Final success message
+        final_message = (
+            "✅ Strategy A positions closed successfully!\n\n"
+            "Summary:\n"
+            "• Helix short position closed\n"
+            "• USDT debt repaid\n"
+            "• INJ collateral withdrawn\n\n"
+            "Use /view_positions to verify all positions are closed."
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("View Positions", callback_data="view_positions")],
+            [InlineKeyboardButton("Back to Menu", callback_data="start")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await progress_msg.edit_text(final_message, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Error in close_strategy_a: {str(e)}")
+        error_message = f"❌ Error closing Strategy A positions: {str(e)}"
+        if 'progress_msg' in locals():
+            await progress_msg.edit_text(error_message)
+        else:
+            await message_obj.reply_text(error_message)
+
 if __name__ == '__main__':
     application = Application.builder().token(TOKEN).build()
     print("Starting bot...")
@@ -1189,6 +1599,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("invest_a", strategy_a))
     application.add_handler(CommandHandler("invest_b", strategy_b))
     application.add_handler(CommandHandler("lend", lend))
+    application.add_handler(CommandHandler("close_a", close_strategy_a))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_error_handler(error_handler)
     
