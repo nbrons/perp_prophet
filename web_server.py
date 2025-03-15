@@ -57,21 +57,30 @@ public_url = setup_ngrok()
 def home():
     return send_file('connect.html')
 
-@app.route('/connect-wallet', methods=['POST'])
+@app.route('/connect-wallet', methods=['GET', 'POST'])
 def connect_wallet():
-    data = request.json
-    logger.info(f"Received wallet connection request: {data}")
-    wallet_address = data.get('wallet_address')
-    telegram_user_id = data.get('telegram_user_id')
+    if request.method == 'GET':
+        # Handle GET request - serve the connection page
+        telegram_user_id = request.args.get('telegram_user_id')
+        if not telegram_user_id:
+            return "Missing telegram_user_id parameter", 400
+        return send_file('connect.html')
     
-    logger.info(f"Processing wallet connection for address: {wallet_address}")
-    
-    if wallet_address and telegram_user_id:
-        save_wallet(telegram_user_id, wallet_address)
-        logger.info(f"Saved wallet connection for user {telegram_user_id}")
-        return jsonify({'status': 'success'})
-    logger.error("Missing required data for wallet connection")
-    return jsonify({'status': 'error', 'message': 'Missing required data'}), 400
+    else:  # POST request
+        # Handle POST request - process the wallet connection
+        data = request.json
+        logger.info(f"Received wallet connection request: {data}")
+        wallet_address = data.get('wallet_address')
+        telegram_user_id = data.get('telegram_user_id')
+        
+        logger.info(f"Processing wallet connection for address: {wallet_address}")
+        
+        if wallet_address and telegram_user_id:
+            save_wallet(telegram_user_id, wallet_address)
+            logger.info(f"Saved wallet connection for user {telegram_user_id}")
+            return jsonify({'status': 'success'})
+        logger.error("Missing required data for wallet connection")
+        return jsonify({'status': 'error', 'message': 'Missing required data'}), 400
 
 @app.route('/transaction')
 def transaction():

@@ -1600,8 +1600,8 @@ async def connect_wallet_callback(update: Update, context: ContextTypes.DEFAULT_
     # Get server URL
     server_url = get_server_url()
     
-    # Create connection URL with session ID
-    connection_url = f"{server_url}/connect?user_id={user_id}&session_id={session_id}"
+    # Create connection URL with correct endpoint and parameters
+    connection_url = f"{server_url}/connect-wallet?telegram_user_id={user_id}"
     
     # Create inline keyboard with connection button
     keyboard = [
