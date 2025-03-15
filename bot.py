@@ -1590,6 +1590,32 @@ async def close_strategy_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await message_obj.reply_text(error_message)
 
+async def connect_wallet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle wallet connection callback"""
+    user_id = update.effective_user.id
+    
+    # Create a unique session ID for this connection attempt
+    session_id = str(uuid.uuid4())
+    
+    # Get server URL
+    server_url = get_server_url()
+    
+    # Create connection URL with session ID
+    connection_url = f"{server_url}/connect?user_id={user_id}&session_id={session_id}"
+    
+    # Create inline keyboard with connection button
+    keyboard = [
+        [InlineKeyboardButton("Connect with Keplr", url=connection_url)],
+        [InlineKeyboardButton("Cancel", callback_data="cancel_connect")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Send message with connection button
+    await update.callback_query.edit_message_text(
+        text="Click below to connect your Keplr wallet:",
+        reply_markup=reply_markup
+    )
+
 if __name__ == '__main__':
     application = Application.builder().token(TOKEN).build()
     print("Starting bot...")
