@@ -279,170 +279,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message, reply_markup=reply_markup)
 
 
-async def get_wallet_balances(wallet_address: str) -> dict:
-    """Get token balances for a wallet"""
-    try:
-        network = Network.mainnet()
-        client = AsyncClient(network=network)
-
-        # Fetch balances from chain
-        response = await client.fetch_bank_balances(wallet_address)
-        logger.info(f"Raw bank balances response: {response}")
-            
-        # Map of denom to token symbol and decimals
-        token_map = {
-            'inj': {'symbol': 'INJ', 'decimals': 1e18},
-            'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7': {'symbol': 'USDT', 'decimals': 1e6},
-                # Add other tokens as needed
-        }
-            
-        balances = {}
-        if 'balances' in response:
-            for balance in response['balances']:
-                denom = balance['denom']
-                if denom in token_map:
-                    token_info = token_map[denom]
-                    amount = float(balance['amount']) / token_info['decimals']
-                    balances[token_info['symbol']] = f"{amount:.6f}"
-            
-        return balances
-    except Exception as e:
-        logger.error(f"Error fetching wallet balances: {str(e)}")
-        return {}
-
-async def get_helix_positions(wallet_address: str) -> list:
-    """Get all Helix positions for a wallet across all markets"""
-    try:
-        # Convert wallet address to subaccount ID (first subaccount)
-        subaccount_id = get_subaccount_id(wallet_address, 0)
-        
-        # Set up network and client
-        network = Network.mainnet()
-        client = AsyncClient(network=network)
-        
-        # Fetch all positions for the subaccount without specifying market
-        positions_response = await client.fetch_chain_subaccount_positions(
-            subaccount_id=subaccount_id
-        )
-        
-        formatted_positions = []
-        
-        if positions_response and 'state' in positions_response:
-            for pos in positions_response['state']:
-                # Skip if no position data
-                if 'position' not in pos:
-                    continue
-                    
-                # Get market data to identify the trading pair
-                market_id = pos['marketId']
-                try:
-                    market_data = await client.fetch_derivative_market(market_id=market_id)
-                    if 'market' in market_data and 'ticker' in market_data['market']:
-                        market_symbol = market_data['market']['ticker']
-                    else:
-                        market_symbol = market_id[:10] + '...'  # Shortened version of market ID
-                except Exception as e:
-                    logger.warning(f"Failed to get market info for {market_id}: {str(e)}")
-                    # If we can't get market data, use the market ID as fallback
-                    market_symbol = market_id[:10] + '...'
-                
-                # Interpret position data
-                position = pos['position']
-                is_long = position.get('isLong', False)
-                quantity = float(position.get('quantity', 0))
-                position_type = "LONG" if is_long else "SHORT"
-                
-                formatted_pos = {
-                    'market_id': market_symbol,
-                    'type': position_type,
-                    'entry_price': float(position.get('entryPrice', 0)) / 1e18,  # Adjust for decimals
-                    'quantity': abs(quantity) / 1e18,  # Adjust for decimals
-                    'margin': float(position.get('margin', 0)) / 1e18,  # Adjust for decimals
-                    'funding': float(position.get('cumulativeFundingEntry', 0)) / 1e18  # Adjust for decimals
-                }
-                formatted_positions.append(formatted_pos)
-        
-        # Debug log
-        logger.info(f"Found {len(formatted_positions)} Helix positions")
-        
-        return formatted_positions
-    except Exception as e:
-        logger.error(f"Error fetching Helix positions: {str(e)}")
-        return []
-
-async def get_neptune_positions(wallet_address: str) -> list:
-    """Get Neptune lending positions"""
-    try:
-        # Neptune Market contract
-        NEPTUNE_MARKET_CONTRACT = "inj1nc7gjkf2mhp34a6gquhurg8qahnw5kxs5u3s4u"
-        
-        network = Network.mainnet()
-        client = AsyncClient(network=network)
-        
-        def decode_base64_data(data):
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    data[key] = decode_base64_data(value)
-            elif isinstance(data, list):
-                data = [decode_base64_data(item) for item in data]
-            elif isinstance(data, str):
-                try:
-                    data = base64.b64decode(data).decode('utf-8')
-                    # Try to parse JSON in case the decoded data is JSON
-                    data = json.loads(data)
-                except Exception:
-                    pass
-            return data
-        
-        # Create query string
-        query_data = f'{{"get_user_accounts": {{"addr": "{wallet_address}"}}}}'
-        
-        # Fetch user positions
-        response = await client.fetch_smart_contract_state(
-            address=NEPTUNE_MARKET_CONTRACT,
-            query_data=query_data
-        )
-        
-        # Decode base64 response
-        decoded_response = decode_base64_data(response)
-        
-        positions = []
-        if decoded_response and 'data' in decoded_response:
-            data = decoded_response['data']
-            
-            # Process each subaccount
-            for subaccount in data:
-                account_info = subaccount[1]
-                
-                # Check debt pool accounts
-                for debt_pool in account_info.get('debt_pool_accounts', []):
-                    asset_info = debt_pool[0]
-                    pool_info = debt_pool[1]
-                    
-                    if 'native_token' in asset_info:
-                        denom = asset_info['native_token']['denom']
-                        if denom == 'inj':
-                            positions.append({
-                                'type': 'INJ Lending',
-                                'amount': str(float(pool_info['principal']) / 1e18),  # INJ has 18 decimals
-                                'shares': str(float(pool_info['shares']) / 1e18),
-                                'token': 'INJ',
-                                'rate': '8.25'  # Placeholder rate - could be dynamic in future
-                            })
-                        elif denom == 'peggy0xdAC17F958D2ee523a2206206994597C13D831ec7':
-                            positions.append({
-                                'type': 'USDT Lending',
-                                'amount': str(float(pool_info['principal']) / 1e6),  # USDT has 6 decimals
-                                'shares': str(float(pool_info['shares']) / 1e6),
-                                'token': 'USDT',
-                                'rate': '12.5'  # Placeholder rate - could be dynamic in future
-                            })
-        
-        return positions
-    except Exception as e:
-        logger.error(f"Error fetching Neptune positions: {str(e)}")
-        return []
-
 async def get_position_info(client_tuple):
     """Get current position information for the Delta Neutral Strategy"""
     try:
@@ -983,42 +819,147 @@ async def analyze_with_iagent(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Initialize client
         client = await setup_client()
         
-        # Get position information
-        position_info = await get_position_info(client)
+        # Get user address and subaccount ID
+        _, _, _, _, _, address = client
+        user_address = address.to_acc_bech32()
+        subaccount_id = address.get_subaccount_id(index=0)
         
-        if not position_info:
-            message = "No active positions to analyze."
-        else:
-            # Format position data for analysis
-            analysis = (
-                "Delta Neutral Strategy Position Analysis:\n\n"
-                f"• Current Position Size: {position_info['short_size']} INJ\n"
-                f"• Entry Price: ${position_info['entry_price']:.2f}\n"
-                f"• Current Price: ${position_info['current_price']:.2f}\n"
-                f"• PnL: ${position_info['pnl']:.2f}\n"
-                f"• Health Factor: {position_info['health_factor']:.2f}\n\n"
-                "Recommendations:\n"
-                "1. Monitor funding rates for optimal exit timing\n"
-                "2. Keep health factor above 1.5 for safety\n"
-                "3. Consider taking profits if PnL > 5%"
-            )
-            message = analysis
+        # Query Neptune user accounts
+        user_query = f'{{"get_user_accounts": {{"addr": "{user_address}"}}}}'
+        decoded_data = await query_contract_state(client[0], NEPTUNE_MARKET_CONTRACT, user_query)
         
+        # Query prices
+        price_query = '{"get_prices": {"assets": [{"native_token": {"denom": "inj"}}, {"native_token": {"denom": "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"}}]}}'
+        prices_data = await query_contract_state(client[0], NEPTUNE_ORACLE_ADDRESS, price_query)
+        
+        # Query account health
+        health_query = f'{{"get_account_health": {{"addr": "{user_address}", "account_index": 0}}}}'
+        health_data = await query_contract_state(client[0], NEPTUNE_QUERIER_ADDRESS, health_query)
+        
+        # Query derivative position
+        position_data = await query_derivative_position(client[0], INJ_PERP_MARKET_ID, subaccount_id)
+        
+        # Query Neptune interest model for borrow rate
+        usdt_borrow_rate = await query_borrow_rate(client[0], NEPTUNE_INTEREST_MODEL_ADDRESS)
+        
+        # Query funding rate
+        funding_rate = await query_funding_rate(client[0], INJ_PERP_MARKET_ID)
+        
+        # Query funding payments
+        total_funding, funding_details = await query_funding_payments(client[0], [INJ_PERP_MARKET_ID], subaccount_id)
+        
+        # Query derivative market data
+        cumulative_funding, market_mark_price = await query_derivative_market_data(client[0], INJ_PERP_MARKET_ID)
+        
+        # Query collateral parameters
+        inj_liquidation_ltv, inj_allowable_ltv = await query_collateral_params(client[0], NEPTUNE_MARKET_CONTRACT)
+        
+        # Extract data from responses
+        inj_collateral = await extract_inj_collateral(decoded_data)
+        usdt_debt = await extract_usdt_debt(decoded_data)
+        inj_price, usdt_price = await extract_prices(prices_data)
+        health_factor, liquidation_threshold = await extract_account_health(health_data)
+        
+        # Calculate values
+        inj_collateral_value = inj_collateral * inj_price
+        usdt_debt_value = usdt_debt * usdt_price
+        
+        # Get Neptune lending and borrow rates
+        neptune_lending_rates = get_neptune_lend_rates()
+        neptune_borrow_rates = get_neptune_borrow_rates()
+        
+        # Format position data for analysis
+        helix_position_data = None
+        if position_data:
+            direction = "Long" if position_data.get('isLong', False) else "Short"
+            quantity = float(position_data.get('quantity', '0')) / 10**18
+            entry_price = float(position_data.get('entryPrice', '0')) / 10**24
+            margin = float(position_data.get('margin', '0')) / 10**24
+            
+            # Calculate funding payment if available
+            funding_payment = 0
+            if cumulative_funding is not None and position_data.get('cumulativeFundingEntry') is not None:
+                cumulative_funding_entry = float(position_data['cumulativeFundingEntry']) / 10**18
+                scaling_factor = 1/1000000
+                funding_diff = cumulative_funding_entry - cumulative_funding if direction == "Short" else cumulative_funding - cumulative_funding_entry
+                funding_payment = -(quantity * funding_diff * scaling_factor)
+            
+            margin_with_funding = margin + funding_payment
+            position_notional = quantity * inj_price
+            pnl = (entry_price - inj_price) * quantity if direction == "Short" else (inj_price - entry_price) * quantity
+            
+            helix_position_data = {
+                'market_id': 'INJ/USDT PERP',
+                'type': direction.upper(),
+                'entry_price': entry_price,
+                'current_price': inj_price,
+                'quantity': quantity,
+                'margin': margin_with_funding,
+                'notional_value': position_notional,
+                'pnl': pnl,
+                'funding_payment': funding_payment,
+                'funding_rate': funding_rate
+            }
+
+        neptune_position_data = {
+            'collateral': {
+                'token': 'INJ',
+                'amount': inj_collateral,
+                'value': inj_collateral_value
+            },
+            'debt': {
+                'token': 'USDT',
+                'amount': usdt_debt,
+                'value': usdt_debt_value
+            },
+            'health_factor': health_factor,
+            'liquidation_threshold': liquidation_threshold,
+            'liquidation_ltv': inj_liquidation_ltv,
+            'allowable_ltv': inj_allowable_ltv
+        }
+
+        market_data = {
+            'prices': {
+                'INJ': inj_price,
+                'USDT': usdt_price
+            },
+            'funding_rate': funding_rate,
+            'funding_history': {
+                'total_payments': total_funding,
+                'recent_payments': funding_details
+            },
+            'lending_rates': neptune_lending_rates,
+            'borrow_rates': neptune_borrow_rates,
+            'cumulative_funding': cumulative_funding
+        }
+
+        # Send to iAgent and get analysis
+        analysis = await agent_client.analyze_positions(
+            [helix_position_data] if helix_position_data else [], 
+            [neptune_position_data] if neptune_position_data else [],
+            market_data
+        )
+
+        # Send analysis to user
         keyboard = [
-            [InlineKeyboardButton("View Positions", callback_data="view_positions")],
+            [InlineKeyboardButton("Update Positions", callback_data="view_positions")],
             [InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]
         ]
-        
         reply_markup = InlineKeyboardMarkup(keyboard)
+
         await update.callback_query.edit_message_text(
-            message,
-            reply_markup=reply_markup
+            text=f"🔍 *iAgent Analysis*\n\n{analysis}",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
         )
-        
     except Exception as e:
-        error_message = f"Error analyzing positions: {str(e)}"
-        logger.error(error_message)
-        await update.callback_query.edit_message_text(error_message)
+        logger.error(f"Error analyzing with iAgent: {str(e)}")
+        await update.callback_query.edit_message_text(
+            text=f"❌ Error: {str(e)}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Back to Positions", callback_data="view_positions")]
+            ])
+        )
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks from inline keyboards."""

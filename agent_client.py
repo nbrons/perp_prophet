@@ -143,9 +143,9 @@ class AgentClient:
             Neptune Positions: {neptune_positions}
             
             Current Market Data:
-            - Helix Funding Rates: {market_data.get('helix_rates', {})}
-            - Neptune Borrow Rates: {market_data.get('neptune_borrow', {})}
-            - Neptune Lending Rates: {market_data.get('neptune_lend', {})}
+            - Helix Funding Rates: {market_data.get('funding_rate', {})}
+            - Neptune Borrow Rates: {market_data.get('borrow_rates', {})}
+            - Neptune Lending Rates: {market_data.get('lending_rates', {})}
             
             How do the market conditions look for these positions? Are there any risks or opportunities to be aware of?
             Provide a concise analysis focusing on funding rates, borrowing rates, and overall market conditions.

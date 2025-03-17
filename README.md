@@ -16,15 +16,11 @@ Note: Keep your token secure! Anyone with your token can control your bot.
 4. activate your venv: `source bot-venv/bin/activate`
 5. Install requirements: `pip install -r requirements.txt`
 6. Run the iAgent on port 5000: `docker run -d -p 5000:5000 -e OPENAI_API_KEY="$OPENAI_API_KEY" -v $(pwd)/agents_config.yaml:/app/agents_config.yaml --name injective-agent injectivelabs/iagent`
-7. Run the web server on port 5001: `python web_server.py`
-8. In another terminal, run the bot: `python bot.py`
+7. In the terminal, run the bot: `python bot.py`
 
 ## Files
 - bot.py: Main Telegram bot logic
-- web_server.py: Web server for wallet connection and transaction signing
-- wallet_storage.py: Handles wallet address storage
-- connect.html: Wallet connection page
-- transaction.html: Transaction signing page
+- agent_client.py: Interface for interacting with the iAgent
 
 ## Setting up iAgent
 
