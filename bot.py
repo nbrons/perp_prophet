@@ -747,7 +747,7 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subaccount_id = get_subaccount_id(address.to_acc_bech32())
         
         # 1. Close Helix position
-        await status_message.edit_text("Step 1/2: Closing Helix short position...")
+        await status_message.edit_text("Step 1/3: Closing Helix short position...")
         helix_result = await close_helix_position(
             client, composer, address, subaccount_id, 
             INJ_PERP_MARKET_ID, network, priv_key, pub_key
@@ -755,42 +755,96 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not helix_result:
             raise Exception("Failed to close Helix position")
         
-        # 2. Withdraw collateral from Neptune
-        await status_message.edit_text("Step 2/2: Withdrawing collateral from Neptune...")
+        # Wait for blockchain confirmation
+        await asyncio.sleep(3)
         
-        # Query user's debt first
+        # 2. Query user's debt and market state
+        await status_message.edit_text("Step 2/3: Calculating and repaying debt...")
+        
+        # Query user accounts to get debt info
         user_query = f'{{"get_user_accounts": {{"addr": "{address.to_acc_bech32()}"}}}}'
         debt_info = await query_market_state(client, NEPTUNE_MARKET_CONTRACT, user_query)
         
-        if debt_info and debt_info.get('debt'):
-            # Repay any remaining debt
-            for denom, info in debt_info['debt'].items():
-                if float(info['principal']) > 0:
-                    repay_msg = {
-                        "repay": {
-                            "account_index": 0,
-                            "amount": info['principal'],
-                            "asset_info": {
-                                "native_token": {"denom": denom}
-                            }
-                        }
-                    }
-                    repay_result = await execute_contract(
-                        json.dumps(repay_msg), debt_info, client, composer,
-                        address, network, priv_key, pub_key,
-                        float(info['principal'])
-                    )
-                    if not repay_result:
-                        raise Exception(f"Failed to repay {denom} debt")
+        # Query global market state to get debt pool info
+        market_query = '{"get_state": {}}'
+        market_state = await query_contract_state(client, NEPTUNE_MARKET_CONTRACT, market_query)
         
-        # Withdraw all collateral
-        withdraw_msg = {"withdraw_collateral": {"account_index": 0}}
-        withdraw_result = await execute_contract(
-            json.dumps(withdraw_msg), debt_info, client, composer,
-            address, network, priv_key, pub_key, 0
-        )
-        if not withdraw_result:
-            raise Exception("Failed to withdraw collateral")
+        # Extract USDT debt pool information
+        usdt_debt_pool = None
+        if "markets" in market_state:
+            for market in market_state["markets"]:
+                if len(market) >= 2 and "native_token" in market[0]:
+                    denom = market[0]["native_token"].get("denom", "")
+                    if denom == "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7":
+                        usdt_debt_pool = market[1].get("debt_pool", {})
+                        break
+        
+        # Calculate exact debt amount
+        if (debt_info and debt_info.get('debt') and 
+            "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7" in debt_info['debt'] and
+            usdt_debt_pool):
+            
+            user_debt = debt_info['debt']["peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+            user_shares = int(user_debt.get("shares", "0"))
+            
+            if user_shares > 0:
+                usdt_balance = int(usdt_debt_pool.get("balance", "0"))
+                usdt_shares = int(usdt_debt_pool.get("shares", "0"))
+                
+                # Calculate exact debt using ceiling division
+                user_actual_debt = (user_shares * usdt_balance + usdt_shares - 1) // usdt_shares
+                
+                # Repay the calculated debt
+                repay_msg = {"return": {"account_index": 0}}
+                repay_result = await execute_contract(
+                    json.dumps(repay_msg), user_debt, client, composer,
+                    address, network, priv_key, pub_key, user_actual_debt
+                )
+                if not repay_result:
+                    raise Exception("Failed to repay debt")
+                
+                # Wait for blockchain confirmation
+                await asyncio.sleep(5)
+                
+                # Check for tiny remaining debt (≤10 USDT)
+                updated_debt_info = await query_market_state(client, NEPTUNE_MARKET_CONTRACT, user_query)
+                if (updated_debt_info and updated_debt_info.get('debt') and 
+                    "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7" in updated_debt_info['debt']):
+                    updated_debt = updated_debt_info['debt']["peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+                    tiny_debt = int(updated_debt.get("principal", "0"))
+                    if 0 < tiny_debt <= 10:
+                        # Repay tiny remaining debt
+                        repay_result = await execute_contract(
+                            json.dumps(repay_msg), updated_debt, client, composer,
+                            address, network, priv_key, pub_key, tiny_debt
+                        )
+                        if not repay_result:
+                            raise Exception("Failed to repay tiny remaining debt")
+        
+        # 3. Withdraw collateral
+        await status_message.edit_text("Step 3/3: Withdrawing collateral...")
+        await asyncio.sleep(5)
+        
+        # Query final state to check for collateral
+        final_state = await query_market_state(client, NEPTUNE_MARKET_CONTRACT, user_query)
+        if final_state and final_state.get('collateral') and 'inj' in final_state['collateral']:
+            inj_collateral = final_state['collateral']['inj']
+            inj_shares = int(inj_collateral.get("principal", "0"))
+            
+            if inj_shares > 0:
+                withdraw_msg = {
+                    "withdraw_collateral": {
+                        "account_index": 0,
+                        "asset_info": {"native_token": {"denom": "inj"}},
+                        "shares": str(inj_shares)
+                    }
+                }
+                withdraw_result = await execute_contract(
+                    json.dumps(withdraw_msg), {}, client, composer,
+                    address, network, priv_key, pub_key, 0
+                )
+                if not withdraw_result:
+                    raise Exception("Failed to withdraw collateral")
         
         # Update message with success
         keyboard = [[InlineKeyboardButton("Back to Menu", callback_data="back_to_menu")]]
