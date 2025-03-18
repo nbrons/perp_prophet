@@ -1061,7 +1061,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def explain_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Explain Delta Neutral Strategy to the user."""
     explanation = (
-        "*Delta Neutral Strategy: Collateral → Borrow & Short*\n\n"
+        "<b>Delta Neutral Strategy: Collateral → Borrow & Short</b>\n\n"
         "This strategy involves leveraging your INJ holdings on Neptune Markets by using them as collateral. You then borrow USDT against this collateral and use the borrowed funds on Helix to establish a short position on INJ. The aim is to profit from negative funding rates while keeping your overall exposure delta neutral.\n\n"
         "Steps:\n\n"
         "1. Collateralize: Deposit INJ as collateral on Neptune Markets.\n"
@@ -1083,25 +1083,25 @@ async def explain_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_strategy_math(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the mathematical formulas behind the Delta Neutral Strategy."""
     math_explanation = (
-        "*Delta Neutral Strategy: Mathematical Breakdown*\n\n"
+        "<b>Delta Neutral Strategy: Mathematical Breakdown</b>\n\n"
         "This approach captures funding rate earnings while keeping your net market exposure neutral through a balanced long (collateral) and short (borrowed USDT) position on the Helix INJ/USDT Perp market.\n\n"
-        "*Key Variables:*\n"
+        "<b>Key Variables:</b>\n"
         "• CF = Collateral Funds (in INJ) secured on Neptune\n"
         "• USDT_B = Borrowed USDT amount\n"
         "• BR = Neptune Borrow Rate (APY) for USDT\n"
         "• FR = Helix Funding Rate (annual equivalent) for the short position\n"
         "• TPS = Total Position Size (1x leverage)\n\n"
 
-        "*Cost Structure:*\n"
+        "<b>Cost Structure:</b>\n"
         "Borrowing Cost (BC) = USDT_B × BR\n\n"
         
-        "*Revenue:*\n"
+        "<b>Revenue:</b>\n"
         "Funding Rate Earnings (FRE) = TPS × FR\n\n"
         
-        "*Profitability Formula:*\n"
+        "<b>Profitability Formula:</b>\n"
         "Net APY = (TPS × FR) − (USDT_B × BR)\n\n"
         
-        "*Risk Management:*\n"
+        "<b>Risk Management:</b>\n"
         "• Delta Neutrality: Ensure that the size of your short position effectively offsets your long exposure via the INJ collateral.\n"
         "• Liquidation Risk: Monitor Neptune’s collateral requirements closely to avoid forced liquidation.\n"
     )
