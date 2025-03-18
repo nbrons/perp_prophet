@@ -1061,14 +1061,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def explain_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Explain Delta Neutral Strategy to the user."""
     explanation = (
-        "*Delta Neutral Strategy: Borrow → Short*\n\n"
-        "This strategy involves borrowing INJ from Neptune Markets, selling it on Helix, "
-        "and then placing a short position to profit from funding rates while remaining delta-neutral.\n\n"
-        "Steps:\n"
-        "1. Borrow INJ from Neptune Markets\n"
-        "2. Sell the borrowed INJ on Helix\n"
-        "3. Create a short position on INJ/USDT perpetual market\n"
-        "4. Collect negative funding rates while maintaining delta neutrality\n\n"
+        "*Delta Neutral Strategy: Collateral → Borrow & Short*\n\n"
+        "This strategy involves leveraging your INJ holdings on Neptune Markets by using them as collateral. You then borrow USDT against this collateral and use the borrowed funds on Helix to establish a short position on INJ. The aim is to profit from negative funding rates while keeping your overall exposure delta neutral.\n\n"
+        "Steps:\n\n"
+        "1. Collateralize: Deposit INJ as collateral on Neptune Markets.\n"
+        "2. Borrow: Borrow USDT against your INJ collateral.\n"
+        "3. Short: Use the borrowed USDT to open a short position on the INJ/USDT perpetual market on Helix.\n"
+        "4. Earn: Collect earnings from negative funding rates while maintaining a balanced delta.\n\n"
         "To execute this strategy, use the /invest command followed by the amount you wish to invest."
     )
     
@@ -1084,26 +1083,27 @@ async def explain_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_strategy_math(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the mathematical formulas behind the Delta Neutral Strategy."""
     math_explanation = (
-        "<b>Delta Neutral Strategy: Mathematical Breakdown</b>\n\n"
-        "This strategy profits from negative funding rates while remaining delta neutral.\n\n"
-        "<b>Key Variables:</b>\n"
-        "• BF = Borrowed Funds (e.g., 1 INJ)\n"
-        "• BR = Neptune Borrow Rate (APY)\n"
-        "• FR = Helix Funding Rate (annual equivalent)\n"
+        "*Delta Neutral Strategy: Mathematical Breakdown*\n\n"
+        "This approach captures funding rate earnings while keeping your net market exposure neutral through a balanced long (collateral) and short (borrowed USDT) position on the Helix INJ/USDT Perp market.\n\n"
+        "*Key Variables:*\n"
+        "• CF = Collateral Funds (in INJ) secured on Neptune\n"
+        "• USDT_B = Borrowed USDT amount\n"
+        "• BR = Neptune Borrow Rate (APY) for USDT\n"
+        "• FR = Helix Funding Rate (annual equivalent) for the short position\n"
         "• TPS = Total Position Size (1x leverage)\n\n"
+
+        "*Cost Structure:*\n"
+        "Borrowing Cost (BC) = USDT_B × BR\n\n"
         
-        "<b>Cost Structure:</b>\n"
-        "Borrowing Cost (BC) = BF × BR\n\n"
+        "*Revenue:*\n"
+        "Funding Rate Earnings (FRE) = TPS × FR\n\n"
         
-        "<b>Revenue:</b>\n"
-        "Funding Rate Earnings (FRE) = TPS × Helix Funding Rate\n\n"
+        "*Profitability Formula:*\n"
+        "Net APY = (TPS × FR) − (USDT_B × BR)\n\n"
         
-        "<b>Profitability Formula:</b>\n"
-        "Net APY = (TPS × Helix Funding Rate) − (BF × Neptune Borrow Rate)\n\n"
-        
-        "<b>Risk Management:</b>\n"
-        "• Delta Neutral: Short position matches borrowed amount\n"
-        "• Liquidation Risk: Monitor collateral requirements on Neptune\n"
+        "*Risk Management:*\n"
+        "• Delta Neutrality: Ensure that the size of your short position effectively offsets your long exposure via the INJ collateral.\n"
+        "• Liquidation Risk: Monitor Neptune’s collateral requirements closely to avoid forced liquidation.\n"
     )
     
     keyboard = [
