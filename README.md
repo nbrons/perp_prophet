@@ -11,7 +11,7 @@ Note: Keep your token secure! Anyone with your token can control your bot.
 
 ## Setup
 1. Copy .env.example to .env
-2. Fill in your Telegram Bot Token and Ngrok Auth Token in .env
+2. Fill in your Telegram Bot Token in .env
 3. setup your venv: `python3 -m venv bot-venv`
 4. activate your venv: `source bot-venv/bin/activate`
 5. Install requirements: `pip install -r requirements.txt`
