@@ -26,7 +26,7 @@ import requests
 from agent_client import AgentClient
 from decimal import Decimal
 from time import sleep
-from pyinjective.constant import GAS_FEE_BUFFER_AMOUNT, GAS_PRICE
+from pyinjective.constant import GAS_PRICE
 from pyinjective.transaction import Transaction
 from pyinjective.wallet import PrivateKey
 import uuid
@@ -84,7 +84,7 @@ NEPTUNE_ORACLE_ADDRESS = "inj1u6cclz0qh5tep9m2qayry9k97dm46pnlqf8nre"
 INJ_MARKET_ID = "0x9b9980167ecc3645ff1a5517886652d94a0825e54a77d2057cbbe3ebee015963"
 FEE_RECIPIENT = "inj1xwfmk0rxf5nw2exvc42u2utgntuypx3k3gdl90"
 MIN_NOTIONAL_SMALLEST_UNITS = 1000000  # 1,000,000 in USDT's smallest units
-GAS_BUFFER = 40000  # Buffer for gas fee computation
+GAS_BUFFER = 50000  # Buffer for gas fee computation
 
 def get_subaccount_id(address, subaccount_index=0):
     """Convert an Injective address to a subaccount ID"""
@@ -748,6 +748,11 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # 1. Close Helix position
         await status_message.edit_text("Step 1/3: Closing Helix short position...")
+        
+        # Refresh account before Helix transaction
+        await client.fetch_account(address.to_acc_bech32())
+        await client.sync_timeout_height()
+        
         helix_result = await close_helix_position(
             client, composer, address, subaccount_id, 
             INJ_PERP_MARKET_ID, network, priv_key, pub_key
@@ -756,10 +761,11 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise Exception("Failed to close Helix position")
         
         # Wait for blockchain confirmation
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         
         # 2. Query user's debt and market state
         await status_message.edit_text("Step 2/3: Calculating and repaying debt...")
+        await client.fetch_account(address.to_acc_bech32())
         
         # Query user accounts to get debt info
         user_query = f'{{"get_user_accounts": {{"addr": "{address.to_acc_bech32()}"}}}}'
@@ -794,6 +800,10 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Calculate exact debt using ceiling division
                 user_actual_debt = (user_shares * usdt_balance + usdt_shares - 1) // usdt_shares
                 
+                # Refresh account before debt repayment
+                # await client.fetch_account(address.to_acc_bech32())
+                # await client.sync_timeout_height()
+                
                 # Repay the calculated debt
                 repay_msg = {"return": {"account_index": 0}}
                 repay_result = await execute_contract(
@@ -813,6 +823,10 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     updated_debt = updated_debt_info['debt']["peggy0xdAC17F958D2ee523a2206206994597C13D831ec7"]
                     tiny_debt = int(updated_debt.get("principal", "0"))
                     if 0 < tiny_debt <= 10:
+                        # Refresh account before tiny debt repayment
+                        await client.fetch_account(address.to_acc_bech32())
+                        await client.sync_timeout_height()
+                        
                         # Repay tiny remaining debt
                         repay_result = await execute_contract(
                             json.dumps(repay_msg), updated_debt, client, composer,
@@ -820,10 +834,11 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         if not repay_result:
                             raise Exception("Failed to repay tiny remaining debt")
+                        await asyncio.sleep(5)
         
         # 3. Withdraw collateral
         await status_message.edit_text("Step 3/3: Withdrawing collateral...")
-        await asyncio.sleep(5)
+        await asyncio.sleep(5)  # Wait for previous transactions to be fully confirmed
         
         # Query final state to check for collateral
         final_state = await query_market_state(client, NEPTUNE_MARKET_CONTRACT, user_query)
@@ -832,6 +847,7 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inj_shares = int(inj_collateral.get("principal", "0"))
             
             if inj_shares > 0:
+                # No fetch_account call here - let sequence number increment naturally
                 withdraw_msg = {
                     "withdraw_collateral": {
                         "account_index": 0,
@@ -839,6 +855,7 @@ async def close_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "shares": str(inj_shares)
                     }
                 }
+                await client.fetch_account(address.to_acc_bech32())
                 withdraw_result = await execute_contract(
                     json.dumps(withdraw_msg), {}, client, composer,
                     address, network, priv_key, pub_key, 0
@@ -1390,6 +1407,8 @@ async def execute_contract_tx(client, composer, network, priv_key, pub_key, addr
     except RpcError as ex:
         print(f"Simulation error: {ex}")
         return None
+
+    print(sim_res)
     
     # Build transaction with gas limit
     gas_price = GAS_PRICE
@@ -1631,7 +1650,7 @@ async def close_helix_position(client, composer, address, subaccount_id, market_
         print("Simulation successful")
         
         gas_price = GAS_PRICE
-        gas_limit = int(sim_res["gasInfo"]["gasUsed"]) + 40000
+        gas_limit = int(sim_res["gasInfo"]["gasUsed"]) + 50000
         gas_fee = "{:.18f}".format((gas_price * gas_limit) / 10**18).rstrip("0")
         fee = [composer.coin(amount=gas_price * gas_limit, denom=network.fee_denom)]
         tx = tx.with_gas(gas_limit).with_fee(fee).with_memo("").with_timeout_height(client.timeout_height)
@@ -1722,9 +1741,12 @@ async def execute_contract(msg, debt_info, client, composer, address, network, p
 
         # Calculate gas and fee
         gas_price = GAS_PRICE
-        gas_limit = int(sim_res["gasInfo"]["gasUsed"]) + GAS_FEE_BUFFER_AMOUNT
+        gas_limit = int(sim_res["gasInfo"]["gasUsed"]) + 50000
         gas_fee = "{:.18f}".format((gas_price * gas_limit) / pow(10, 18)).rstrip("0")
         fee = [composer.coin(amount=gas_price * gas_limit, denom=network.fee_denom)]
+
+        await client.fetch_account(address.to_acc_bech32())
+        await client.sync_timeout_height()
 
         # Build final transaction
         tx = (
